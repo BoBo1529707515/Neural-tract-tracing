@@ -1,11 +1,11 @@
 {
-  "version": "1.0",
-  "created": "2026-02-12T18:22:18.690394",
+  "version": "3.0",
+  "created": "2026-02-12T18:39:21.644976",
   "video_info": {
     "path": "F:\\工作文件\\RA\\python\\项目汇总\\神经图像\\neuron_growth_50.mp4",
     "width": 1280,
     "height": 720,
-    "fps": 30,
+    "fps": 30.0,
     "total_frames": 150
   },
   "neurons": {
@@ -20,6 +20,11 @@
           "frame": 108,
           "x": 853,
           "y": 181
+        },
+        {
+          "frame": 30,
+          "x": 256,
+          "y": 389
         }
       ]
     }
