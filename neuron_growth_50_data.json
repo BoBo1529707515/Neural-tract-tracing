@@ -1,14 +1,6 @@
 {
-  "version": "8.1",
-  "created": "2026-02-14T13:45:17.736641",
-  "video_info": {
-    "path": "F:\\工作文件\\RA\\python\\项目汇总\\神经图像\\neuron_growth_50.mp4",
-    "width": 1280,
-    "height": 720,
-    "fps": 30.0,
-    "total_frames": 150
-  },
-  "neurons": {
+  "version": "9.0",
+  "marks": {
     "0": {
       "color": [
         0,
@@ -19,25 +11,15 @@
         {
           "frame": 0,
           "x": 10,
-          "y": 196
+          "y": 200
         },
         {
-          "frame": 87,
-          "x": 378,
-          "y": 309
-        },
-        {
-          "frame": 87,
-          "x": 354,
-          "y": 306
-        },
-        {
-          "frame": 87,
-          "x": 308,
-          "y": 297
+          "frame": 92,
+          "x": 635,
+          "y": 271
         }
       ]
     }
   },
-  "trajectories": {}
+  "trajs": {}
 }
