@@ -412,8 +412,8 @@ class NeuronTrackerGrowth:
 
 
 if __name__ == "__main__":
-    VIDEO_PATH = r"F:\工作文件\RA\python\项目汇总\神经图像\neuron_growth_50.mp4"
-    OUTPUT_PATH = r"F:\工作文件\RA\python\项目汇总\神经图像\output\growth_tracking.mp4"
+    VIDEO_PATH = r"/neuron_growth_50.mp4"
+    OUTPUT_PATH = r"/output/growth_tracking.mp4"
 
     tracker = NeuronTrackerGrowth(
         clahe_clip_limit=3.0,

@@ -167,8 +167,8 @@ class NeuronTrackerGPU:
 
 
 if __name__ == "__main__":
-    VIDEO_PATH = r"F:\工作文件\RA\python\项目汇总\神经图像\cde7198975117a224bb23963f96cbd3d.mp4"
-    OUTPUT_PATH = r"F:\工作文件\RA\python\项目汇总\神经图像\output\result_gpu.mp4"
+    VIDEO_PATH = r"/cde7198975117a224bb23963f96cbd3d.mp4"
+    OUTPUT_PATH = r"/output/result_gpu.mp4"
 
     tracker = NeuronTrackerGPU(
         clahe_clip_limit=3.0,

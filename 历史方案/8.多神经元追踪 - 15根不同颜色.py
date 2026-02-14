@@ -492,8 +492,8 @@ class MultiNeuronTracker:
 
 
 if __name__ == "__main__":
-    VIDEO_PATH = r"F:\工作文件\RA\python\项目汇总\神经图像\neuron_growth_50.mp4"
-    OUTPUT_PATH = r"F:\工作文件\RA\python\项目汇总\神经图像\output\multi_neuron_15.mp4"
+    VIDEO_PATH = r"/neuron_growth_50.mp4"
+    OUTPUT_PATH = r"/output/multi_neuron_15.mp4"
 
     tracker = MultiNeuronTracker(
         num_neurons=15,  # ← 追踪15根

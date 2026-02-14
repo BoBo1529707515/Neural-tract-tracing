@@ -20,6 +20,7 @@ except ImportError:
 
 
 def generate_colors(n):
+    """生成n种不同的颜色"""
     colors = []
     for i in range(n):
         hue = int(180 * i / n)
@@ -30,10 +31,12 @@ def generate_colors(n):
 
 
 class NeuronState:
+    """单个神经元状态"""
+
     def __init__(self, neuron_id, color, init_point):
         self.id = neuron_id
         self.color = color
-        self.init_point = init_point
+        self.init_point = init_point  # 用户标记的初始点
         self.fixed_trajectory = []
         self.current_tip = None
         self.locked_y_mean = None
@@ -41,7 +44,7 @@ class NeuronState:
 
 
 class ManualNeuronTracker:
-    """手动标记 - 可选择任意帧"""
+    """手动标记初始点的神经元追踪"""
 
     def __init__(self,
                  num_neurons=15,
@@ -76,13 +79,10 @@ class ManualNeuronTracker:
         self.colors = generate_colors(num_neurons)
         self.neurons = []
 
+        # 鼠标点击状态
         self.clicked_points = []
         self.current_frame = None
         self.display_scale = 1.0
-
-        # 帧选择相关
-        self.selected_frame_idx = 0
-        self.total_frames = 0
 
     def get_roi(self, h, w):
         margin_y = int(h * self.margin_ratio)
@@ -163,134 +163,44 @@ class ManualNeuronTracker:
 
         return skeleton
 
-    def select_frame(self, cap):
-        """让用户选择标记帧"""
-        self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-        max_display_width = 1400
-        max_display_height = 800
-        self.display_scale = min(1.0, max_display_width / width, max_display_height / height)
-
-        current_idx = 0
-
-        window_name = 'Select Frame - A/D or Arrow Keys to Navigate, ENTER to Confirm'
-        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-
-        # 创建滑动条
-        def on_trackbar(val):
-            nonlocal current_idx
-            current_idx = val
-
-        cv2.createTrackbar('Frame', window_name, 0, self.total_frames - 1, on_trackbar)
-
-        print("\n" + "=" * 60)
-        print("帧选择模式")
-        print("=" * 60)
-        print("  - A/← : 上一帧")
-        print("  - D/→ : 下一帧")
-        print("  - W/↑ : 前进10帧")
-        print("  - S/↓ : 后退10帧")
-        print("  - 滑动条 : 快速跳转")
-        print("  - Enter : 确认选择此帧")
-        print("  - Q : 取消")
-        print("=" * 60 + "\n")
-
-        while True:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, current_idx)
-            ret, frame = cap.read()
-
-            if not ret:
-                current_idx = max(0, current_idx - 1)
-                continue
-
-            display = frame.copy()
-
-            # 显示帧信息
-            info = f"Frame: {current_idx + 1}/{self.total_frames} | ENTER=Confirm, Q=Cancel"
-            cv2.putText(display, info, (11, 31), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 3)
-            cv2.putText(display, info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-
-            # 进度条
-            bar_width = width - 40
-            bar_x = 20
-            bar_y = height - 30
-            progress = current_idx / max(1, self.total_frames - 1)
-            cv2.rectangle(display, (bar_x, bar_y), (bar_x + bar_width, bar_y + 10), (50, 50, 50), -1)
-            cv2.rectangle(display, (bar_x, bar_y), (bar_x + int(bar_width * progress), bar_y + 10), (0, 255, 0), -1)
-
-            display_resized = cv2.resize(display, None, fx=self.display_scale, fy=self.display_scale)
-            cv2.imshow(window_name, display_resized)
-
-            # 同步滑动条
-            cv2.setTrackbarPos('Frame', window_name, current_idx)
-
-            key = cv2.waitKey(30) & 0xFF
-
-            # 从滑动条获取当前值
-            current_idx = cv2.getTrackbarPos('Frame', window_name)
-
-            if key == 13 or key == 10:  # Enter
-                self.selected_frame_idx = current_idx
-                print(f"✓ 选择帧 {current_idx + 1}")
-                break
-
-            elif key == ord('q') or key == ord('Q'):
-                print("✗ 取消")
-                cv2.destroyWindow(window_name)
-                return None, -1
-
-            elif key == ord('a') or key == 81:  # A or Left
-                current_idx = max(0, current_idx - 1)
-
-            elif key == ord('d') or key == 83:  # D or Right
-                current_idx = min(self.total_frames - 1, current_idx + 1)
-
-            elif key == ord('w') or key == 82:  # W or Up
-                current_idx = min(self.total_frames - 1, current_idx + 10)
-
-            elif key == ord('s') or key == 84:  # S or Down
-                current_idx = max(0, current_idx - 10)
-
-        cv2.destroyWindow(window_name)
-
-        # 重新读取选定帧
-        cap.set(cv2.CAP_PROP_POS_FRAMES, self.selected_frame_idx)
-        ret, selected_frame = cap.read()
-
-        return selected_frame, self.selected_frame_idx
-
     def mouse_callback(self, event, x, y, flags, param):
+        """鼠标点击回调"""
         if event == cv2.EVENT_LBUTTONDOWN:
+            # 转换回原始坐标
             orig_x = int(x / self.display_scale)
             orig_y = int(y / self.display_scale)
 
             if len(self.clicked_points) < self.num_neurons:
-                self.clicked_points.append((orig_y, orig_x))
+                self.clicked_points.append((orig_y, orig_x))  # (y, x)格式
                 print(f"  标记点 {len(self.clicked_points)}: ({orig_x}, {orig_y})")
 
         elif event == cv2.EVENT_RBUTTONDOWN:
+            # 右键撤销最后一个点
             if len(self.clicked_points) > 0:
                 removed = self.clicked_points.pop()
                 print(f"  撤销点: ({removed[1]}, {removed[0]})")
 
     def manual_select_points(self, frame, roi):
-        """手动标记初始点"""
+        """让用户手动标记初始点"""
         y1, y2, x1, x2 = roi
         h, w = frame.shape[:2]
 
         self.clicked_points = []
         self.current_frame = frame.copy()
 
-        window_name = 'Mark Neurons - Left=Add, Right=Undo, ENTER=Confirm, Q=Cancel'
+        # 计算显示缩放
+        max_display_width = 1400
+        max_display_height = 800
+        self.display_scale = min(1.0, max_display_width / w, max_display_height / h)
+
+        window_name = 'Mark Neurons - Left Click to Add, Right Click to Undo, ENTER to Confirm, Q to Cancel'
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
         cv2.setMouseCallback(window_name, self.mouse_callback)
 
         print("\n" + "=" * 60)
-        print(f"标记模式 (帧 {self.selected_frame_idx + 1})")
+        print("手动标记模式")
         print("=" * 60)
-        print(f"请标记最多 {self.num_neurons} 个神经元起始点")
+        print(f"请在第一帧上点击标记 {self.num_neurons} 个神经元的起始点")
         print("  - 左键: 添加标记点")
         print("  - 右键: 撤销上一个点")
         print("  - Enter: 确认完成")
@@ -298,10 +208,13 @@ class ManualNeuronTracker:
         print("=" * 60 + "\n")
 
         while True:
+            # 绘制当前帧和标记点
             display = self.current_frame.copy()
 
+            # 绘制ROI边界
             cv2.rectangle(display, (x1, y1), (x2, y2), (60, 60, 60), 1)
 
+            # 绘制已标记的点
             for i, (py, px) in enumerate(self.clicked_points):
                 color = self.colors[i]
                 cv2.circle(display, (px, py), 8, color, -1)
@@ -309,16 +222,18 @@ class ManualNeuronTracker:
                 cv2.putText(display, str(i + 1), (px + 12, py + 5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-            info = f"Frame {self.selected_frame_idx + 1} | Marked: {len(self.clicked_points)}/{self.num_neurons}"
+            # 提示信息
+            info = f"Marked: {len(self.clicked_points)}/{self.num_neurons} | ENTER=Confirm, Q=Cancel"
             cv2.putText(display, info, (11, 31), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3)
             cv2.putText(display, info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
+            # 缩放显示
             display_resized = cv2.resize(display, None, fx=self.display_scale, fy=self.display_scale)
             cv2.imshow(window_name, display_resized)
 
             key = cv2.waitKey(30) & 0xFF
 
-            if key == 13 or key == 10:
+            if key == 13 or key == 10:  # Enter
                 if len(self.clicked_points) > 0:
                     print(f"\n✓ 确认 {len(self.clicked_points)} 个标记点")
                     break
@@ -334,6 +249,7 @@ class ManualNeuronTracker:
         return self.clicked_points
 
     def find_nearest_skeleton_point(self, skeleton, frame, click_point, roi, radius=30):
+        """在点击位置附近找最近的绿色骨架点"""
         y1, y2, x1, x2 = roi
         h, w = skeleton.shape
         cy, cx = click_point
@@ -357,12 +273,14 @@ class ManualNeuronTracker:
         return best_point
 
     def trace_bidirectional(self, skeleton, frame, start_point, roi):
+        """从起始点双向追踪（向左和向右）"""
         if start_point is None:
             return []
 
         y1, y2, x1, x2 = roi
         h, w = skeleton.shape
 
+        # 追踪函数（可指定方向优先）
         def trace_direction(start, prefer_left=True):
             visited = set()
             trajectory = [start]
@@ -411,8 +329,10 @@ class ManualNeuronTracker:
 
             return trajectory, visited
 
+        # 向左追踪
         left_traj, left_visited = trace_direction(start_point, prefer_left=True)
 
+        # 向右追踪（避开左边已访问的点）
         right_traj = [start_point]
         visited = left_visited.copy()
         current = start_point
@@ -454,25 +374,31 @@ class ManualNeuronTracker:
             right_traj.append(next_point)
             current = next_point
 
+        # 合并轨迹：左边（倒序） + 右边
         full_trajectory = left_traj[::-1] + right_traj[1:]
+
         return full_trajectory
 
     def initialize_from_clicks(self, skeleton, frame, roi, clicked_points):
+        """根据用户点击初始化神经元"""
         self.neurons = []
 
         for i, click_pt in enumerate(clicked_points):
+            # 找最近的骨架点
             skeleton_pt = self.find_nearest_skeleton_point(skeleton, frame, click_pt, roi)
 
             if skeleton_pt is None:
                 print(f"  ⚠ 点{i + 1}附近未找到骨架，跳过")
                 continue
 
+            # 双向追踪
             trajectory = self.trace_bidirectional(skeleton, frame, skeleton_pt, roi)
 
             if len(trajectory) < 5:
                 print(f"  ⚠ 点{i + 1}轨迹太短({len(trajectory)}点)，跳过")
                 continue
 
+            # 按X排序
             coords = np.array(trajectory)
             sorted_indices = np.argsort(coords[:, 1])
             sorted_traj = coords[sorted_indices].tolist()
@@ -481,7 +407,7 @@ class ManualNeuronTracker:
 
             neuron = NeuronState(len(self.neurons), self.colors[len(self.neurons)], click_pt)
             neuron.fixed_trajectory = sorted_traj
-            neuron.current_tip = tuple(sorted_traj[-1])
+            neuron.current_tip = tuple(sorted_traj[-1])  # 最右点
             neuron.locked_y_mean = y_mean
 
             self.neurons.append(neuron)
@@ -490,6 +416,7 @@ class ManualNeuronTracker:
         return len(self.neurons)
 
     def find_growth_for_neuron(self, skeleton, frame, neuron, roi):
+        """为神经元找生长点（只向右生长）"""
         if neuron.current_tip is None or not neuron.active:
             return []
 
@@ -557,6 +484,7 @@ class ManualNeuronTracker:
             sorted_indices = np.argsort(coords[:, 1])
             sorted_coords = coords[sorted_indices]
 
+            # 轨迹
             for j in range(len(sorted_coords) - 1):
                 pt1 = (int(sorted_coords[j, 1]), int(sorted_coords[j, 0]))
                 pt2 = (int(sorted_coords[j + 1, 1]), int(sorted_coords[j + 1, 0]))
@@ -564,23 +492,29 @@ class ManualNeuronTracker:
                 if dist < 30:
                     cv2.line(result, pt1, pt2, neuron.color, 2)
 
+            # 起点（最左）
             leftmost = sorted_coords[0]
             cv2.circle(result, (int(leftmost[1]), int(leftmost[0])), 4, neuron.color, -1)
 
+            # 初始标记点
             cv2.circle(result, (neuron.init_point[1], neuron.init_point[0]), 3, (255, 255, 255), -1)
 
+            # 生长端（最右）
             rightmost = sorted_coords[-1]
             cv2.circle(result, (int(rightmost[1]), int(rightmost[0])), 5, neuron.color, -1)
             cv2.circle(result, (int(rightmost[1]), int(rightmost[0])), 7, (255, 255, 255), 1)
 
+            # 编号
             cv2.putText(result, str(neuron.id + 1),
                         (int(rightmost[1]) + 8, int(rightmost[0]) + 4),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, neuron.color, 1)
 
-        info = f"Frame {frame_idx + 1}/{self.total_frames} | Neurons: {len(self.neurons)} | Start: {self.selected_frame_idx + 1}"
+        # 信息
+        info = f"Frame {frame_idx} | Neurons: {len(self.neurons)}"
         cv2.putText(result, info, (11, 31), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3)
         cv2.putText(result, info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
+        # 图例
         legend_y = 50
         for i, neuron in enumerate(self.neurons):
             cv2.rectangle(result, (10, legend_y + i * 14), (18, legend_y + i * 14 + 10), neuron.color, -1)
@@ -598,42 +532,45 @@ class ManualNeuronTracker:
         fps = int(cap.get(cv2.CAP_PROP_FPS))
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
         roi = self.get_roi(height, width)
 
-        print(f"视频: {width}x{height}, {fps}fps, {self.total_frames}帧")
+        print(f"视频: {width}x{height}, {fps}fps, {total_frames}帧")
 
-        # ===== 步骤1: 选择帧 =====
-        selected_frame, frame_idx = self.select_frame(cap)
+        # 读取第一帧
+        ret, first_frame = cap.read()
+        if not ret:
+            raise ValueError("无法读取第一帧")
 
-        if selected_frame is None:
-            print("未选择帧，退出")
-            cap.release()
-            return
-
-        # ===== 步骤2: 标记点 =====
-        clicked_points = self.manual_select_points(selected_frame, roi)
+        # 手动标记
+        clicked_points = self.manual_select_points(first_frame, roi)
 
         if len(clicked_points) == 0:
             print("未标记任何点，退出")
             cap.release()
             return
 
-        # ===== 步骤3: 初始化神经元 =====
-        skeleton = self.preprocess_frame(selected_frame, roi)
-        num_found = self.initialize_from_clicks(skeleton, selected_frame, roi, clicked_points)
-        print(f"\n✓ 初始化 {num_found} 根神经元 (从帧 {self.selected_frame_idx + 1} 开始)")
+        # 预处理第一帧
+        skeleton = self.preprocess_frame(first_frame, roi)
+
+        # 初始化神经元
+        num_found = self.initialize_from_clicks(skeleton, first_frame, roi, clicked_points)
+        print(f"\n✓ 初始化 {num_found} 根神经元")
 
         if num_found == 0:
             print("未能初始化任何神经元，退出")
             cap.release()
             return
 
-        # ===== 步骤4: 准备输出 =====
+        # 准备输出
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
+        # 写入第一帧
+        vis_frame = self.draw_result(first_frame, roi, 1)
+        writer.write(vis_frame)
 
         can_show = show_preview
         if can_show:
@@ -642,27 +579,23 @@ class ManualNeuronTracker:
             except:
                 can_show = False
 
-        # ===== 步骤5: 从选定帧向后追踪 =====
-        cap.set(cv2.CAP_PROP_POS_FRAMES, self.selected_frame_idx)
-
-        frames_to_process = self.total_frames - self.selected_frame_idx
-        pbar = tqdm(total=frames_to_process, desc=f"追踪 (从帧{self.selected_frame_idx + 1})")
-
-        current_frame_idx = self.selected_frame_idx
+        pbar = tqdm(total=total_frames - 1, desc="追踪中")
+        frame_idx = 1
 
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
 
+            frame_idx += 1
             skeleton = self.preprocess_frame(frame, roi)
 
-            if current_frame_idx > self.selected_frame_idx:
-                for neuron in self.neurons:
-                    new_points = self.find_growth_for_neuron(skeleton, frame, neuron, roi)
-                    self.update_neuron(neuron, new_points)
+            # 更新每根神经元
+            for neuron in self.neurons:
+                new_points = self.find_growth_for_neuron(skeleton, frame, neuron, roi)
+                self.update_neuron(neuron, new_points)
 
-            vis_frame = self.draw_result(frame, roi, current_frame_idx)
+            vis_frame = self.draw_result(frame, roi, frame_idx)
             writer.write(vis_frame)
 
             if can_show:
@@ -672,7 +605,6 @@ class ManualNeuronTracker:
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
 
-            current_frame_idx += 1
             pbar.update(1)
 
         pbar.close()
@@ -682,17 +614,16 @@ class ManualNeuronTracker:
             cv2.destroyAllWindows()
 
         print(f"\n✓ 完成! {output_path}")
-        print(f"  输出帧范围: {self.selected_frame_idx + 1} ~ {current_frame_idx}")
         for n in self.neurons:
             print(f"  N{n.id + 1}: {len(n.fixed_trajectory)} pts")
 
 
 if __name__ == "__main__":
-    VIDEO_PATH = r"F:\工作文件\RA\python\项目汇总\神经图像\neuron_growth_50.mp4"
-    OUTPUT_PATH = r"F:\工作文件\RA\python\项目汇总\神经图像\output\manual_any_frame.mp4"
+    VIDEO_PATH = r"/neuron_growth_50.mp4"
+    OUTPUT_PATH = r"F:\工作文件\RA\python\项目汇总\神经图像\output\manual_tracking.mp4"
 
     tracker = ManualNeuronTracker(
-        num_neurons=15,
+        num_neurons=15,  # 最多标记15根
         clahe_clip_limit=3.0,
         adaptive_block_size=15,
         adaptive_c=3,

@@ -33,18 +33,17 @@ def generate_colors(n):
 class NeuronState:
     """单个神经元状态"""
 
-    def __init__(self, neuron_id, color, init_point):
+    def __init__(self, neuron_id, color):
         self.id = neuron_id
         self.color = color
-        self.init_point = init_point  # 用户标记的初始点
         self.fixed_trajectory = []
         self.current_tip = None
         self.locked_y_mean = None
         self.active = True
 
 
-class ManualNeuronTracker:
-    """手动标记初始点的神经元追踪"""
+class MultiNeuronTracker:
+    """多神经元追踪 - 按Y分段检测"""
 
     def __init__(self,
                  num_neurons=15,
@@ -59,7 +58,8 @@ class ManualNeuronTracker:
                  green_threshold=40,
                  max_gap=15,
                  search_radius=40,
-                 y_tolerance=30):
+                 min_neuron_length=15,
+                 y_tolerance=20):  # 同一神经元的Y容差
 
         self.num_neurons = num_neurons
         self.clahe_clip_limit = clahe_clip_limit
@@ -73,16 +73,13 @@ class ManualNeuronTracker:
         self.green_threshold = green_threshold
         self.max_gap = max_gap
         self.search_radius = search_radius
+        self.min_neuron_length = min_neuron_length
         self.y_tolerance = y_tolerance
 
         self.clahe = cv2.createCLAHE(clipLimit=clahe_clip_limit, tileGridSize=(8, 8))
         self.colors = generate_colors(num_neurons)
         self.neurons = []
-
-        # 鼠标点击状态
-        self.clicked_points = []
-        self.current_frame = None
-        self.display_scale = 1.0
+        self.locked = False
 
     def get_roi(self, h, w):
         margin_y = int(h * self.margin_ratio)
@@ -163,178 +160,77 @@ class ManualNeuronTracker:
 
         return skeleton
 
-    def mouse_callback(self, event, x, y, flags, param):
-        """鼠标点击回调"""
-        if event == cv2.EVENT_LBUTTONDOWN:
-            # 转换回原始坐标
-            orig_x = int(x / self.display_scale)
-            orig_y = int(y / self.display_scale)
-
-            if len(self.clicked_points) < self.num_neurons:
-                self.clicked_points.append((orig_y, orig_x))  # (y, x)格式
-                print(f"  标记点 {len(self.clicked_points)}: ({orig_x}, {orig_y})")
-
-        elif event == cv2.EVENT_RBUTTONDOWN:
-            # 右键撤销最后一个点
-            if len(self.clicked_points) > 0:
-                removed = self.clicked_points.pop()
-                print(f"  撤销点: ({removed[1]}, {removed[0]})")
-
-    def manual_select_points(self, frame, roi):
-        """让用户手动标记初始点"""
-        y1, y2, x1, x2 = roi
-        h, w = frame.shape[:2]
-
-        self.clicked_points = []
-        self.current_frame = frame.copy()
-
-        # 计算显示缩放
-        max_display_width = 1400
-        max_display_height = 800
-        self.display_scale = min(1.0, max_display_width / w, max_display_height / h)
-
-        window_name = 'Mark Neurons - Left Click to Add, Right Click to Undo, ENTER to Confirm, Q to Cancel'
-        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-        cv2.setMouseCallback(window_name, self.mouse_callback)
-
-        print("\n" + "=" * 60)
-        print("手动标记模式")
-        print("=" * 60)
-        print(f"请在第一帧上点击标记 {self.num_neurons} 个神经元的起始点")
-        print("  - 左键: 添加标记点")
-        print("  - 右键: 撤销上一个点")
-        print("  - Enter: 确认完成")
-        print("  - Q: 取消")
-        print("=" * 60 + "\n")
-
-        while True:
-            # 绘制当前帧和标记点
-            display = self.current_frame.copy()
-
-            # 绘制ROI边界
-            cv2.rectangle(display, (x1, y1), (x2, y2), (60, 60, 60), 1)
-
-            # 绘制已标记的点
-            for i, (py, px) in enumerate(self.clicked_points):
-                color = self.colors[i]
-                cv2.circle(display, (px, py), 8, color, -1)
-                cv2.circle(display, (px, py), 10, (255, 255, 255), 2)
-                cv2.putText(display, str(i + 1), (px + 12, py + 5),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-
-            # 提示信息
-            info = f"Marked: {len(self.clicked_points)}/{self.num_neurons} | ENTER=Confirm, Q=Cancel"
-            cv2.putText(display, info, (11, 31), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3)
-            cv2.putText(display, info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-
-            # 缩放显示
-            display_resized = cv2.resize(display, None, fx=self.display_scale, fy=self.display_scale)
-            cv2.imshow(window_name, display_resized)
-
-            key = cv2.waitKey(30) & 0xFF
-
-            if key == 13 or key == 10:  # Enter
-                if len(self.clicked_points) > 0:
-                    print(f"\n✓ 确认 {len(self.clicked_points)} 个标记点")
-                    break
-                else:
-                    print("⚠ 请至少标记1个点")
-
-            elif key == ord('q') or key == ord('Q'):
-                print("✗ 取消标记")
-                self.clicked_points = []
-                break
-
-        cv2.destroyWindow(window_name)
-        return self.clicked_points
-
-    def find_nearest_skeleton_point(self, skeleton, frame, click_point, roi, radius=30):
-        """在点击位置附近找最近的绿色骨架点"""
+    def find_rightmost_points_by_row(self, skeleton, frame, roi):
+        """
+        按行扫描，找每个Y位置段的最右点
+        返回: [(y, x), ...] 候选起始点列表
+        """
         y1, y2, x1, x2 = roi
         h, w = skeleton.shape
-        cy, cx = click_point
 
-        best_point = None
-        best_dist = float('inf')
+        # 收集所有骨架点
+        ys, xs = np.where(skeleton)
+        if len(xs) == 0:
+            return []
 
-        for dy in range(-radius, radius + 1):
-            for dx in range(-radius, radius + 1):
-                ny, nx = cy + dy, cx + dx
+        # 按Y分段，每段找最右的绿色点
+        y_min, y_max = ys.min(), ys.max()
+        y_range = y_max - y_min
 
-                if 0 <= ny < h and 0 <= nx < w:
-                    if y1 <= ny < y2 and x1 <= nx < x2:
-                        if skeleton[ny, nx]:
-                            if self.is_green_pixel(frame, ny, nx):
-                                dist = dy ** 2 + dx ** 2
-                                if dist < best_dist:
-                                    best_dist = dist
-                                    best_point = (ny, nx)
+        if y_range < 10:
+            return []
 
-        return best_point
+        # 分成多个Y段
+        num_segments = max(self.num_neurons * 2, 30)  # 多分一些段
+        segment_height = y_range / num_segments
 
-    def trace_bidirectional(self, skeleton, frame, start_point, roi):
-        """从起始点双向追踪（向左和向右）"""
+        rightmost_per_segment = {}
+
+        for i in range(len(ys)):
+            y, x = ys[i], xs[i]
+
+            # 必须在ROI内
+            if not (y1 <= y < y2 and x1 <= x < x2):
+                continue
+
+            # 必须是绿色
+            if not self.is_green_pixel(frame, y, x):
+                continue
+
+            # 确定所属段
+            segment_idx = int((y - y_min) / segment_height) if segment_height > 0 else 0
+
+            # 保留该段最右的点
+            if segment_idx not in rightmost_per_segment:
+                rightmost_per_segment[segment_idx] = (y, x)
+            else:
+                if x > rightmost_per_segment[segment_idx][1]:
+                    rightmost_per_segment[segment_idx] = (y, x)
+
+        # 按Y排序
+        candidates = list(rightmost_per_segment.values())
+        candidates.sort(key=lambda p: p[0])
+
+        return candidates
+
+    def trace_from_point_limited(self, skeleton, frame, start_point, roi, used_points):
+        """
+        从起始点向左追踪，避开已使用的点
+        """
         if start_point is None:
             return []
 
         y1, y2, x1, x2 = roi
         h, w = skeleton.shape
+        visited = np.zeros_like(skeleton, dtype=bool)
+        trajectory = [start_point]
+        visited[start_point[0], start_point[1]] = True
 
-        # 追踪函数（可指定方向优先）
-        def trace_direction(start, prefer_left=True):
-            visited = set()
-            trajectory = [start]
-            visited.add(start)
-            current = start
-            start_y = start[0]
+        # 标记已使用的点
+        for pt in used_points:
+            if 0 <= pt[0] < h and 0 <= pt[1] < w:
+                visited[pt[0], pt[1]] = True
 
-            while True:
-                next_point = None
-                best_score = float('-inf')
-
-                for search_r in [1, 2, self.max_gap]:
-                    for dy in range(-search_r, search_r + 1):
-                        for dx in range(-search_r, search_r + 1):
-                            if dy == 0 and dx == 0:
-                                continue
-
-                            ny, nx = current[0] + dy, current[1] + dx
-
-                            if 0 <= ny < h and 0 <= nx < w:
-                                if y1 <= ny < y2:
-                                    if skeleton[ny, nx] and (ny, nx) not in visited:
-                                        if self.is_green_pixel(frame, ny, nx):
-                                            if abs(ny - start_y) > self.y_tolerance * 2:
-                                                continue
-
-                                            dist = np.sqrt(dy ** 2 + dx ** 2)
-                                            if prefer_left:
-                                                score = -dx * 10 - abs(dy) * 3 - dist * 2
-                                            else:
-                                                score = dx * 10 - abs(dy) * 3 - dist * 2
-
-                                            if score > best_score:
-                                                best_score = score
-                                                next_point = (ny, nx)
-
-                    if next_point is not None:
-                        break
-
-                if next_point is None:
-                    break
-
-                visited.add(next_point)
-                trajectory.append(next_point)
-                current = next_point
-
-            return trajectory, visited
-
-        # 向左追踪
-        left_traj, left_visited = trace_direction(start_point, prefer_left=True)
-
-        # 向右追踪（避开左边已访问的点）
-        right_traj = [start_point]
-        visited = left_visited.copy()
         current = start_point
         start_y = start_point[0]
 
@@ -352,14 +248,14 @@ class ManualNeuronTracker:
 
                         if 0 <= ny < h and 0 <= nx < w:
                             if y1 <= ny < y2:
-                                if skeleton[ny, nx] and (ny, nx) not in visited:
+                                if skeleton[ny, nx] and not visited[ny, nx]:
                                     if self.is_green_pixel(frame, ny, nx):
+                                        # Y不能偏离太多
                                         if abs(ny - start_y) > self.y_tolerance * 2:
                                             continue
 
                                         dist = np.sqrt(dy ** 2 + dx ** 2)
-                                        score = dx * 10 - abs(dy) * 3 - dist * 2
-
+                                        score = -dx * 10 - abs(dy) * 3 - dist * 2
                                         if score > best_score:
                                             best_score = score
                                             next_point = (ny, nx)
@@ -370,53 +266,89 @@ class ManualNeuronTracker:
             if next_point is None:
                 break
 
-            visited.add(next_point)
-            right_traj.append(next_point)
+            visited[next_point[0], next_point[1]] = True
+            trajectory.append(next_point)
             current = next_point
 
-        # 合并轨迹：左边（倒序） + 右边
-        full_trajectory = left_traj[::-1] + right_traj[1:]
+            if current[1] <= x1 + 5:
+                break
 
-        return full_trajectory
+        return trajectory
 
-    def initialize_from_clicks(self, skeleton, frame, roi, clicked_points):
-        """根据用户点击初始化神经元"""
+    def initialize_neurons(self, skeleton, frame, roi):
+        """第一帧：检测多根神经元"""
+        # 找所有候选起始点
+        candidates = self.find_rightmost_points_by_row(skeleton, frame, roi)
+
+        print(f"  找到 {len(candidates)} 个候选起始点")
+
+        if len(candidates) == 0:
+            return 0
+
+        # 已使用的轨迹点
+        used_points = set()
+
+        # 已确定的神经元Y位置（避免重复）
+        confirmed_y_means = []
+
         self.neurons = []
+        neuron_id = 0
 
-        for i, click_pt in enumerate(clicked_points):
-            # 找最近的骨架点
-            skeleton_pt = self.find_nearest_skeleton_point(skeleton, frame, click_pt, roi)
+        for candidate in candidates:
+            if neuron_id >= self.num_neurons:
+                break
 
-            if skeleton_pt is None:
-                print(f"  ⚠ 点{i + 1}附近未找到骨架，跳过")
+            # 检查是否与已有神经元Y位置太近
+            too_close = False
+            for y_mean in confirmed_y_means:
+                if abs(candidate[0] - y_mean) < self.y_tolerance:
+                    too_close = True
+                    break
+
+            if too_close:
                 continue
 
-            # 双向追踪
-            trajectory = self.trace_bidirectional(skeleton, frame, skeleton_pt, roi)
+            # 追踪
+            trajectory = self.trace_from_point_limited(skeleton, frame, candidate, roi, used_points)
 
-            if len(trajectory) < 5:
-                print(f"  ⚠ 点{i + 1}轨迹太短({len(trajectory)}点)，跳过")
+            if len(trajectory) < self.min_neuron_length:
                 continue
 
-            # 按X排序
+            # 创建神经元
             coords = np.array(trajectory)
             sorted_indices = np.argsort(coords[:, 1])
             sorted_traj = coords[sorted_indices].tolist()
 
             y_mean = coords[:, 0].mean()
 
-            neuron = NeuronState(len(self.neurons), self.colors[len(self.neurons)], click_pt)
+            # 再次检查Y位置
+            too_close = False
+            for existing_y in confirmed_y_means:
+                if abs(y_mean - existing_y) < self.y_tolerance:
+                    too_close = True
+                    break
+
+            if too_close:
+                continue
+
+            neuron = NeuronState(neuron_id, self.colors[neuron_id])
             neuron.fixed_trajectory = sorted_traj
-            neuron.current_tip = tuple(sorted_traj[-1])  # 最右点
+            neuron.current_tip = tuple(sorted_traj[-1])
             neuron.locked_y_mean = y_mean
 
             self.neurons.append(neuron)
-            print(f"  ✓ N{neuron.id + 1}: 初始长度={len(sorted_traj)}, Y≈{y_mean:.0f}")
+            confirmed_y_means.append(y_mean)
+
+            # 标记已使用的点
+            for pt in trajectory:
+                used_points.add(tuple(pt))
+
+            neuron_id += 1
 
         return len(self.neurons)
 
     def find_growth_for_neuron(self, skeleton, frame, neuron, roi):
-        """为神经元找生长点（只向右生长）"""
+        """为单个神经元找生长点"""
         if neuron.current_tip is None or not neuron.active:
             return []
 
@@ -476,10 +408,13 @@ class ManualNeuronTracker:
 
         cv2.rectangle(result, (x1, y1), (x2, y2), (60, 60, 60), 1)
 
+        active_count = 0
+
         for neuron in self.neurons:
             if len(neuron.fixed_trajectory) < 2:
                 continue
 
+            active_count += 1
             coords = np.array(neuron.fixed_trajectory)
             sorted_indices = np.argsort(coords[:, 1])
             sorted_coords = coords[sorted_indices]
@@ -492,14 +427,11 @@ class ManualNeuronTracker:
                 if dist < 30:
                     cv2.line(result, pt1, pt2, neuron.color, 2)
 
-            # 起点（最左）
+            # 起点
             leftmost = sorted_coords[0]
             cv2.circle(result, (int(leftmost[1]), int(leftmost[0])), 4, neuron.color, -1)
 
-            # 初始标记点
-            cv2.circle(result, (neuron.init_point[1], neuron.init_point[0]), 3, (255, 255, 255), -1)
-
-            # 生长端（最右）
+            # 生长端
             rightmost = sorted_coords[-1]
             cv2.circle(result, (int(rightmost[1]), int(rightmost[0])), 5, neuron.color, -1)
             cv2.circle(result, (int(rightmost[1]), int(rightmost[0])), 7, (255, 255, 255), 1)
@@ -510,7 +442,7 @@ class ManualNeuronTracker:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, neuron.color, 1)
 
         # 信息
-        info = f"Frame {frame_idx} | Neurons: {len(self.neurons)}"
+        info = f"Frame {frame_idx} | Neurons: {active_count}/{len(self.neurons)}"
         cv2.putText(result, info, (11, 31), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3)
         cv2.putText(result, info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
@@ -518,7 +450,7 @@ class ManualNeuronTracker:
         legend_y = 50
         for i, neuron in enumerate(self.neurons):
             cv2.rectangle(result, (10, legend_y + i * 14), (18, legend_y + i * 14 + 10), neuron.color, -1)
-            info_text = f"N{neuron.id + 1}: {len(neuron.fixed_trajectory)}pts"
+            info_text = f"N{neuron.id + 1}: {len(neuron.fixed_trajectory)}pts, Y={neuron.locked_y_mean:.0f}"
             cv2.putText(result, info_text, (22, legend_y + i * 14 + 9),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.3, (200, 200, 200), 1)
 
@@ -537,50 +469,28 @@ class ManualNeuronTracker:
         roi = self.get_roi(height, width)
 
         print(f"视频: {width}x{height}, {fps}fps, {total_frames}帧")
+        print(f"目标追踪: {self.num_neurons} 根神经元")
+        print(f"Y容差: {self.y_tolerance}px (区分不同神经元)")
 
-        # 读取第一帧
-        ret, first_frame = cap.read()
-        if not ret:
-            raise ValueError("无法读取第一帧")
-
-        # 手动标记
-        clicked_points = self.manual_select_points(first_frame, roi)
-
-        if len(clicked_points) == 0:
-            print("未标记任何点，退出")
-            cap.release()
-            return
-
-        # 预处理第一帧
-        skeleton = self.preprocess_frame(first_frame, roi)
-
-        # 初始化神经元
-        num_found = self.initialize_from_clicks(skeleton, first_frame, roi, clicked_points)
-        print(f"\n✓ 初始化 {num_found} 根神经元")
-
-        if num_found == 0:
-            print("未能初始化任何神经元，退出")
-            cap.release()
-            return
-
-        # 准备输出
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
-        # 写入第一帧
-        vis_frame = self.draw_result(first_frame, roi, 1)
-        writer.write(vis_frame)
-
-        can_show = show_preview
-        if can_show:
+        can_show = False
+        if show_preview:
             try:
-                cv2.namedWindow('Tracking', cv2.WINDOW_NORMAL)
+                cv2.namedWindow('test', cv2.WINDOW_NORMAL)
+                cv2.destroyWindow('test')
+                can_show = True
             except:
-                can_show = False
+                print("⚠ GUI不可用")
 
-        pbar = tqdm(total=total_frames - 1, desc="追踪中")
-        frame_idx = 1
+        self.neurons = []
+        self.locked = False
+
+        pbar = tqdm(total=total_frames, desc="多神经元追踪")
+        frame_idx = 0
 
         while True:
             ret, frame = cap.read()
@@ -590,10 +500,17 @@ class ManualNeuronTracker:
             frame_idx += 1
             skeleton = self.preprocess_frame(frame, roi)
 
-            # 更新每根神经元
-            for neuron in self.neurons:
-                new_points = self.find_growth_for_neuron(skeleton, frame, neuron, roi)
-                self.update_neuron(neuron, new_points)
+            if not self.locked:
+                num_found = self.initialize_neurons(skeleton, frame, roi)
+                if num_found > 0:
+                    self.locked = True
+                    print(f"✓ 帧{frame_idx}: 锁定 {num_found} 根神经元")
+                    for n in self.neurons:
+                        print(f"   N{n.id + 1}: Y≈{n.locked_y_mean:.0f}, 初始长度={len(n.fixed_trajectory)}")
+            else:
+                for neuron in self.neurons:
+                    new_points = self.find_growth_for_neuron(skeleton, frame, neuron, roi)
+                    self.update_neuron(neuron, new_points)
 
             vis_frame = self.draw_result(frame, roi, frame_idx)
             writer.write(vis_frame)
@@ -601,7 +518,7 @@ class ManualNeuronTracker:
             if can_show:
                 scale = min(1.0, 1280 / width, 720 / height)
                 display = cv2.resize(vis_frame, None, fx=scale, fy=scale)
-                cv2.imshow('Tracking', display)
+                cv2.imshow('Multi-Neuron (Q quit)', display)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
 
@@ -619,11 +536,11 @@ class ManualNeuronTracker:
 
 
 if __name__ == "__main__":
-    VIDEO_PATH = r"F:\工作文件\RA\python\项目汇总\神经图像\neuron_growth_50.mp4"
-    OUTPUT_PATH = r"F:\工作文件\RA\python\项目汇总\神经图像\output\manual_tracking.mp4"
+    VIDEO_PATH = r"/neuron_growth_50.mp4"
+    OUTPUT_PATH = r"/output/multi_neuron_15.mp4"
 
-    tracker = ManualNeuronTracker(
-        num_neurons=15,  # 最多标记15根
+    tracker = MultiNeuronTracker(
+        num_neurons=15,
         clahe_clip_limit=3.0,
         adaptive_block_size=15,
         adaptive_c=3,
@@ -633,7 +550,8 @@ if __name__ == "__main__":
         green_threshold=40,
         max_gap=15,
         search_radius=40,
-        y_tolerance=30
+        min_neuron_length=15,
+        y_tolerance=20  # ← Y相差20px以上才算不同神经元
     )
 
     tracker.process_video(
