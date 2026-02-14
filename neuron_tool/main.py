@@ -6,6 +6,8 @@
 import cv2
 import numpy as np
 import os
+import tkinter as tk
+from tkinter import filedialog
 
 # 导入各模块
 from .config import Config
@@ -69,6 +71,14 @@ class NeuronTool:
         # 动作结果
         self.action_result = None
 
+        # 隐藏的tkinter根窗口，用于文件对话框
+        self.root = tk.Tk()
+        self.root.withdraw()
+        
+        # 路径变量
+        self.data_path = None
+        self.output_video_path = None
+
     def _init_ui(self):
         """初始化UI组件"""
         y1 = self.image_area_height + 12
@@ -120,31 +130,36 @@ class NeuronTool:
 
         # ===== 第二行：模式和操作 =====
         x = 15
-        self.buttons['mode_mark'] = Button(x, y2, 70, bh, 'MARK', (60, 60, 90));
+        self.buttons['mode_mark'] = Button(x, y2, 70, bh, 'MARK', Config.COLOR_BUTTON);
         x += 75
-        self.buttons['mode_track'] = Button(x, y2, 70, bh, 'TRACK', (60, 60, 90));
+        self.buttons['mode_track'] = Button(x, y2, 70, bh, 'TRACK', Config.COLOR_BUTTON);
         x += 85
 
-        self.buttons['run_track'] = Button(x, y2, 100, bh, '▶ RUN', (40, 100, 40));
+        self.buttons['run_track'] = Button(x, y2, 100, bh, '▶ RUN', Config.COLOR_BUTTON_SUCCESS);
         x += 105
-        self.buttons['stop'] = Button(x, y2, 50, bh, 'STOP', (100, 40, 40));
+        self.buttons['stop'] = Button(x, y2, 50, bh, 'STOP', Config.COLOR_BUTTON_DANGER);
         x += 60
 
         self.buttons['undo'] = Button(x, y2, 50, bh, 'Undo');
         x += 55
-        self.buttons['save'] = Button(x, y2, 50, bh, 'Save', (50, 80, 50));
+        self.buttons['save'] = Button(x, y2, 50, bh, 'Save', Config.COLOR_BUTTON_SUCCESS);
         x += 55
+        self.buttons['save_as'] = Button(x, y2, 65, bh, 'SaveAs', Config.COLOR_BUTTON_SUCCESS);
+        x += 70
         self.buttons['load'] = Button(x, y2, 50, bh, 'Load');
         x += 60
 
-        self.buttons['clear_traj'] = Button(x, y2, 80, bh, 'Clear Traj', (80, 50, 50));
+        self.buttons['set_out'] = Button(x, y2, 70, bh, 'Set Out', Config.COLOR_BUTTON);
+        x += 75
+
+        self.buttons['clear_traj'] = Button(x, y2, 80, bh, 'Clear Traj', Config.COLOR_BUTTON_DANGER);
         x += 85
-        self.buttons['clear_all'] = Button(x, y2, 80, bh, 'Clear ALL', (120, 40, 40));
+        self.buttons['clear_all'] = Button(x, y2, 80, bh, 'Clear ALL', Config.COLOR_BUTTON_DANGER);
         x += 95
 
-        self.buttons['confirm'] = Button(x, y2, 80, bh, 'CONFIRM', (50, 110, 50));
+        self.buttons['confirm'] = Button(x, y2, 80, bh, 'CONFIRM', Config.COLOR_BUTTON_SUCCESS);
         x += 85
-        self.buttons['cancel'] = Button(x, y2, 60, bh, 'Cancel', (90, 50, 50))
+        self.buttons['cancel'] = Button(x, y2, 60, bh, 'Cancel', Config.COLOR_BUTTON_DANGER)
 
         # ===== 第三行：快速神经元选择 =====
         for i in range(20):
@@ -212,8 +227,12 @@ class NeuronTool:
                 print(f"  撤销 N{self.current_neuron_id} 最后一个标记")
         elif name == 'save':
             return 'save'
+        elif name == 'save_as':
+            return 'save_as'
         elif name == 'load':
             return 'load'
+        elif name == 'set_out':
+            return 'set_out'
         elif name == 'mode_mark':
             self.mode = 'mark'
         elif name == 'mode_track':
@@ -543,12 +562,15 @@ class NeuronTool:
 
         # 设置默认数据路径
         if data_path is None:
-            data_path = os.path.splitext(video_path)[0] + "_data.json"
-        output_video_path = os.path.splitext(video_path)[0] + "_tracked.mp4"
+            self.data_path = os.path.splitext(video_path)[0] + "_data.json"
+        else:
+            self.data_path = data_path
+            
+        self.output_video_path = os.path.splitext(video_path)[0] + "_tracked.mp4"
 
         # 加载已有数据
-        if os.path.exists(data_path):
-            self.data.load(data_path)
+        if os.path.exists(self.data_path):
+            self.data.load(self.data_path)
 
         # 初始化UI
         self._init_ui()
@@ -584,19 +606,48 @@ class NeuronTool:
 
             # 处理动作
             if self.action_result == 'confirm':
-                self.data.save(data_path)
+                self.data.save(self.data_path)
                 break
             elif self.action_result == 'cancel':
                 break
             elif self.action_result == 'save':
-                self.data.save(data_path)
+                self.data.save(self.data_path)
+                self.action_result = None
+            elif self.action_result == 'save_as':
+                path = filedialog.asksaveasfilename(
+                    defaultextension=".json",
+                    filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+                    initialfile=os.path.basename(self.data_path),
+                    initialdir=os.path.dirname(self.data_path)
+                )
+                if path:
+                    self.data_path = path
+                    self.data.save(self.data_path)
+                self.action_result = None
+            elif self.action_result == 'set_out':
+                path = filedialog.asksaveasfilename(
+                    defaultextension=".mp4",
+                    filetypes=[("MP4 files", "*.mp4"), ("All files", "*.*")],
+                    initialfile=os.path.basename(self.output_video_path),
+                    initialdir=os.path.dirname(self.output_video_path)
+                )
+                if path:
+                    self.output_video_path = path
+                    print(f"输出路径设置为: {self.output_video_path}")
                 self.action_result = None
             elif self.action_result == 'load':
-                self.data.load(data_path)
+                path = filedialog.askopenfilename(
+                    defaultextension=".json",
+                    filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+                    initialdir=os.path.dirname(self.data_path)
+                )
+                if path:
+                    self.data_path = path
+                    self.data.load(self.data_path)
                 self.action_result = None
             elif self.action_result == 'run_track':
-                self.run_tracking(output_video_path)
-                self.data.save(data_path)
+                self.run_tracking(self.output_video_path)
+                self.data.save(self.data_path)
                 self.action_result = None
 
             # 处理键盘
@@ -613,18 +664,30 @@ class NeuronTool:
 
             if key == 27:  # Esc
                 break
-            elif key == ord('a') or key == 81:
+            elif key == ord('a'): # A: Prev Frame
                 self.video.read_frame(self.video.current_frame_idx - 1)
                 self._update_frame_input()
-            elif key == ord('d') or key == 83:
+            elif key == ord('d'): # D: Next Frame
                 self.video.read_frame(self.video.current_frame_idx + 1)
                 self._update_frame_input()
-            elif key == ord('w') or key == 82:
+            elif key == ord('w'): # W: Next 10 Frames
                 self.video.read_frame(self.video.current_frame_idx + 10)
                 self._update_frame_input()
-            elif key == ord('s') or key == 84:
+            elif key == ord('s'): # S: Prev 10 Frames
                 self.video.read_frame(self.video.current_frame_idx - 10)
                 self._update_frame_input()
+            
+            # 方向键平移 (Up: 82, Down: 84, Left: 81, Right: 83)
+            # 注意: 不同平台键值可能不同，这里兼容常见的Windows/Linux键值
+            elif key == 81: # Left Arrow
+                self.pan_x += 50
+            elif key == 83: # Right Arrow
+                self.pan_x -= 50
+            elif key == 82: # Up Arrow
+                self.pan_y += 50
+            elif key == 84: # Down Arrow
+                self.pan_y -= 50
+                
             elif ord('0') <= key <= ord('9'):
                 self.current_neuron_id = key - ord('0')
                 self.neuron_input.text = str(self.current_neuron_id)
@@ -635,10 +698,11 @@ class NeuronTool:
             elif key == ord('x') or key == ord('X'):
                 self.data.delete_neuron(self.current_neuron_id)
             elif key == 13:  # Enter
-                self.data.save(data_path)
+                self.data.save(self.data_path)
                 break
 
         cv2.destroyAllWindows()
         self.video.release()
+        self.root.destroy()  # 销毁tkinter窗口
 
-        return data_path
+        return self.data_path

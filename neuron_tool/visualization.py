@@ -187,7 +187,7 @@ class Visualizer:
 
             cv2.putText(canvas, f"{prefix}N{nid}: {mark_len}m/{traj_len}t",
                         (lx + 20, yp + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
-                        (200, 200, 200), 1, cv2.LINE_AA)
+                        Config.COLOR_TEXT, 1, cv2.LINE_AA)
 
     def draw_tips(self, canvas):
         """
@@ -199,7 +199,7 @@ class Visualizer:
         image_area_h = canvas.shape[0] - Config.PANEL_HEIGHT
         tips = "L-Click: Mark | R-Click: Del | Wheel: Zoom | M-Drag: Pan"
         cv2.putText(canvas, tips, (10, image_area_h - 8),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (100, 100, 100), 1, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, Config.COLOR_TEXT_DIM, 1, cv2.LINE_AA)
 
     def draw_frame_on_video(self, frame, frame_idx, total_frames):
         """

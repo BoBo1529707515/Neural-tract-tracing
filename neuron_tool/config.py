@@ -45,24 +45,33 @@ class Config:
     GROWTH_MAX_DEPTH = 30  # 生长搜索最大深度
 
     # ==================== 颜色定义 ====================
-    # UI颜色 (BGR格式)
-    COLOR_BACKGROUND = (30, 30, 30)
-    COLOR_PANEL = (25, 25, 25)
-    COLOR_BUTTON = (70, 70, 70)
-    COLOR_BUTTON_HOVER = (100, 100, 100)
-    COLOR_BUTTON_ACTIVE = (70, 140, 70)
-    COLOR_BUTTON_DANGER = (60, 60, 120)
-    COLOR_BUTTON_SUCCESS = (50, 110, 50)
-    COLOR_TEXT = (255, 255, 255)
-    COLOR_TEXT_INFO = (0, 220, 220)
-    COLOR_TEXT_DIM = (180, 180, 180)
-    COLOR_BORDER = (140, 140, 140)
-    COLOR_INPUT_ACTIVE = (60, 60, 90)
-    COLOR_INPUT_BORDER_ACTIVE = (100, 150, 255)
+    # UI颜色 (BGR格式) - 现代深色主题
+    COLOR_BACKGROUND = (32, 32, 36)      # 主背景：深碳色
+    COLOR_PANEL = (40, 44, 50)           # 面板背景：稍亮的蓝灰色
+    
+    # 按钮颜色
+    COLOR_BUTTON = (55, 60, 68)          # 默认按钮：中性灰
+    COLOR_BUTTON_HOVER = (75, 80, 90)    # 悬停：提亮
+    COLOR_BUTTON_ACTIVE = (200, 140, 60) # 激活/选中：醒目的蓝色 (BGR: 60, 140, 200)
+    
+    # 功能按钮特化颜色
+    COLOR_BUTTON_DANGER = (80, 70, 180)  # 危险操作：柔和红 (BGR)
+    COLOR_BUTTON_SUCCESS = (80, 160, 80) # 成功/运行：柔和绿 (BGR)
+    
+    # 文本与边框
+    COLOR_TEXT = (230, 230, 230)         # 主要文字：柔和白
+    COLOR_TEXT_INFO = (255, 180, 80)     # 信息文字：淡蓝/青色 (BGR)
+    COLOR_TEXT_DIM = (160, 160, 160)     # 次要文字：灰色
+    COLOR_BORDER = (70, 75, 85)          # 边框：低对比度灰
+    
+    # 输入框
+    COLOR_INPUT_BG = (25, 28, 32)        # 输入框背景：深黑
+    COLOR_INPUT_ACTIVE = (45, 50, 60)    # 输入框激活背景
+    COLOR_INPUT_BORDER_ACTIVE = (200, 140, 60) # 输入框激活边框 (同强调色)
 
     # 标记颜色
-    COLOR_TRAJECTORY_END = (0, 0, 255)  # 轨迹终点（红色）
-    COLOR_MARK_HIGHLIGHT = (255, 255, 255)  # 标记高亮（白色）
+    COLOR_TRAJECTORY_END = (50, 50, 255)    # 轨迹终点（鲜红）
+    COLOR_MARK_HIGHLIGHT = (255, 255, 255)  # 标记高亮（纯白）
 
 
 def generate_neuron_colors(n):
