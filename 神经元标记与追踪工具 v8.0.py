@@ -40,7 +40,7 @@ class Config:
     MIN_OBJECT_SIZE = 50
 
     # 追踪
-    MAX_GAP = 15
+    MAX_GAP = 20
     Y_TOLERANCE = 35
     DIRECTION_WEIGHT = 15
 
@@ -199,32 +199,181 @@ class ImageProc:
         return best
 
 
-# ============================================================================
-#                              追踪
-# ============================================================================
-
 class Tracker:
     def __init__(self, ip):
         self.ip = ip
 
     def _dir(self, t, n=8):
-        if len(t) < 2: return (0, 1)
+        """计算轨迹最近n个点的平均方向"""
+        if len(t) < 2:
+            return (0, 1)
         r = t[-min(n, len(t)):]
-        dy, dx = r[-1][0] - r[0][0], r[-1][1] - r[0][1]
-        ln = np.sqrt(dy*dy + dx*dx)
-        return (dy/ln, dx/ln) if ln > 0.001 else (0, 1)
+        dy = r[-1][0] - r[0][0]
+        dx = r[-1][1] - r[0][1]
+        ln = np.sqrt(dy * dy + dx * dx)
+        return (dy / ln, dx / ln) if ln > 0.001 else (0, 1)
+
+    def _trace1(self, skel, f, start, yc, left, avoid=None, history=None):
+        """
+        单向追踪
+
+        参数:
+            history: 历史轨迹，用于计算初始方向（修复方向丢失问题）
+        """
+        if not start:
+            return []
+
+        h, w = skel.shape
+        vis = set(avoid) if avoid else set()
+
+        # ===== 关键：使用历史轨迹初始化方向 =====
+        if history and len(history) >= 2:
+            dir_history = list(history[-10:])
+        else:
+            dir_history = [start]
+
+        vis.add(start)
+        cur = start
+        new_points = []
+
+        while True:
+            d = self._dir(dir_history)
+            cands = []
+
+            for sr in [1, 2, Config.MAX_GAP]:
+                for dy in range(-sr, sr + 1):
+                    for dx in range(-sr, sr + 1):
+                        if dy == 0 and dx == 0:
+                            continue
+                        ny, nx = cur[0] + dy, cur[1] + dx
+
+                        if not (0 <= ny < h and 0 <= nx < w):
+                            continue
+                        if (ny, nx) in vis:
+                            continue
+                        if not skel[ny, nx]:
+                            continue
+                        if not self.ip.is_green(f, ny, nx):
+                            continue
+                        if abs(ny - yc) > Config.Y_TOLERANCE * 2:
+                            continue
+
+                        dist = np.sqrt(dy * dy + dx * dx)
+                        sc = (-dx if left else dx) * 10 - abs(dy) * 3 - dist * 2
+
+                        if dist > 0:
+                            cd = (dy / dist, dx / dist)
+                            sc += (d[0] * cd[0] + d[1] * cd[1]) * Config.DIRECTION_WEIGHT
+
+                        cands.append(((ny, nx), sc))
+
+                if cands:
+                    break
+
+            if not cands:
+                break
+
+            cands.sort(key=lambda x: x[1], reverse=True)
+            best = cands[0][0]
+
+            vis.add(best)
+            new_points.append(best)
+            dir_history.append(best)
+            cur = best
+
+        return new_points
+
+    def _bidir(self, skel, f, start):
+        """双向追踪（初始化时无历史）"""
+        if not start:
+            return []
+        yc = start[0]
+        left = self._trace1(skel, f, start, yc, left=True)
+        right = self._trace1(skel, f, start, yc, left=False)
+
+        # 合并：左边的点需要倒序
+        full = []
+        if left:
+            full = left[::-1]
+        full.append(start)
+        if right:
+            full.extend(right)
+        return full
+
+    def grow(self, skel, f, traj, yc):
+        """生长追踪（传递历史轨迹保持方向）"""
+        if not traj:
+            return []
+        return self._trace1(
+            skel, f,
+            start=traj[-1],
+            yc=yc,
+            left=False,
+            avoid=set(traj),
+            history=traj  # ← 传递历史！
+        )
+
+    def _astar(self, skel, f, start, end):
+        """A*路径搜索"""
+        h, w = skel.shape
+        heur = lambda p: np.sqrt((p[0] - end[0]) ** 2 + (p[1] - end[1]) ** 2)
+        cnt = 0
+        heap = [(heur(start), cnt, start, [start])]
+        vis = {start}
+
+        for _ in range(5000):
+            if not heap:
+                break
+            _, _, cur, path = heapq.heappop(heap)
+            if cur == end or heur(cur) < 3:
+                return path + [end] if cur != end else path
+
+            for dy in range(-2, 3):
+                for dx in range(-2, 3):
+                    if dy == 0 and dx == 0:
+                        continue
+                    ny, nx = cur[0] + dy, cur[1] + dx
+                    if not (0 <= ny < h and 0 <= nx < w):
+                        continue
+                    if (ny, nx) in vis:
+                        continue
+                    if not skel[ny, nx] or not self.ip.is_green(f, ny, nx):
+                        continue
+                    vis.add((ny, nx))
+                    cnt += 1
+                    heapq.heappush(heap, (len(path) + heur((ny, nx)), cnt, (ny, nx), path + [(ny, nx)]))
+
+        # A*失败，直线连接
+        path = [start]
+        steps = max(1, int(heur(start)))
+        for i in range(1, steps + 1):
+            t = i / steps
+            y = int(start[0] + t * (end[0] - start[0]))
+            x = int(start[1] + t * (end[1] - start[1]))
+            if (y, x) != path[-1]:
+                path.append((y, x))
+        if path[-1] != end:
+            path.append(end)
+        return path
 
     def trace(self, skel, f, markers):
-        if not markers: return []
+        """使用标记点进行初始追踪"""
+        if not markers:
+            return []
+
         pts = []
         for m in markers:
             p = self.ip.nearest_skel(skel, f, (m["x"], m["y"]))
-            if p: pts.append(p)
-        if not pts: return []
+            if p:
+                pts.append(p)
+
+        if not pts:
+            return []
+
         # 去重
         uniq = []
         for p in pts:
-            if not any(abs(p[0]-u[0])<5 and abs(p[1]-u[1])<5 for u in uniq):
+            if not any(abs(p[0] - u[0]) < 5 and abs(p[1] - u[1]) < 5 for u in uniq):
                 uniq.append(p)
         uniq.sort(key=lambda p: p[1])
 
@@ -233,97 +382,23 @@ class Tracker:
 
         # 多点A*连接
         traj = []
-        for i in range(len(uniq)-1):
-            seg = self._astar(skel, f, uniq[i], uniq[i+1])
+        for i in range(len(uniq) - 1):
+            seg = self._astar(skel, f, uniq[i], uniq[i + 1])
             if seg:
-                if traj and seg[0] == traj[-1]: seg = seg[1:]
+                if traj and seg[0] == traj[-1]:
+                    seg = seg[1:]
                 traj.extend(seg)
 
         # 两端延伸
         if uniq:
-            left = self._trace1(skel, f, uniq[0], uniq[0][0], True, set(traj))
+            left = self._trace1(skel, f, uniq[0], uniq[0][0], left=True, avoid=set(traj))
             traj = left[::-1] + traj
-            right = self._trace1(skel, f, uniq[-1], uniq[-1][0], False, set(traj))
+            right = self._trace1(skel, f, uniq[-1], uniq[-1][0], left=False, avoid=set(traj))
             traj = traj + right
 
+        # 去重
         seen = set()
         return [p for p in traj if not (p in seen or seen.add(p))]
-
-    def _astar(self, skel, f, start, end):
-        h, w = skel.shape
-        heur = lambda p: np.sqrt((p[0]-end[0])**2 + (p[1]-end[1])**2)
-        cnt = 0
-        heap = [(heur(start), cnt, start, [start])]
-        vis = {start}
-        for _ in range(5000):
-            if not heap: break
-            _, _, cur, path = heapq.heappop(heap)
-            if cur == end or heur(cur) < 3:
-                return path + [end] if cur != end else path
-            for dy in range(-2, 3):
-                for dx in range(-2, 3):
-                    if dy == 0 and dx == 0: continue
-                    ny, nx = cur[0]+dy, cur[1]+dx
-                    if not (0 <= ny < h and 0 <= nx < w): continue
-                    if (ny, nx) in vis: continue
-                    if not skel[ny, nx] or not self.ip.is_green(f, ny, nx): continue
-                    vis.add((ny, nx))
-                    cnt += 1
-                    heapq.heappush(heap, (len(path) + heur((ny, nx)), cnt, (ny, nx), path + [(ny, nx)]))
-        # 直连
-        path = [start]
-        steps = int(heur(start)) + 1
-        for i in range(1, steps+1):
-            t = i / steps
-            y, x = int(start[0] + t*(end[0]-start[0])), int(start[1] + t*(end[1]-start[1]))
-            if (y, x) != path[-1]: path.append((y, x))
-        if path[-1] != end: path.append(end)
-        return path
-
-    def _trace1(self, skel, f, start, yc, left, avoid=None):
-        if not start: return []
-        h, w = skel.shape
-        vis = set(avoid) if avoid else set()
-        t = [start]
-        vis.add(start)
-        cur = start
-        while True:
-            d = self._dir(t)
-            cands = []
-            for sr in [1, 2, Config.MAX_GAP]:
-                for dy in range(-sr, sr+1):
-                    for dx in range(-sr, sr+1):
-                        if dy == 0 and dx == 0: continue
-                        ny, nx = cur[0]+dy, cur[1]+dx
-                        if not (0 <= ny < h and 0 <= nx < w): continue
-                        if (ny, nx) in vis: continue
-                        if not skel[ny, nx] or not self.ip.is_green(f, ny, nx): continue
-                        if abs(ny - yc) > Config.Y_TOLERANCE * 2: continue
-                        dist = np.sqrt(dy*dy + dx*dx)
-                        sc = (-dx if left else dx) * 10 - abs(dy) * 3 - dist * 2
-                        if dist > 0:
-                            cd = (dy/dist, dx/dist)
-                            sc += (d[0]*cd[0] + d[1]*cd[1]) * Config.DIRECTION_WEIGHT
-                        cands.append(((ny, nx), sc))
-                if cands: break
-            if not cands: break
-            cands.sort(key=lambda x: x[1], reverse=True)
-            best = cands[0][0]
-            vis.add(best)
-            t.append(best)
-            cur = best
-        return t
-
-    def _bidir(self, skel, f, start):
-        if not start: return []
-        yc = start[0]
-        left = self._trace1(skel, f, start, yc, True)
-        right = self._trace1(skel, f, start, yc, False)
-        return left[::-1] + right[1:] if len(right) > 1 else left[::-1]
-
-    def grow(self, skel, f, traj, yc):
-        if not traj: return []
-        return self._trace1(skel, f, traj[-1], yc, False, set(traj))
 
 
 # ============================================================================
