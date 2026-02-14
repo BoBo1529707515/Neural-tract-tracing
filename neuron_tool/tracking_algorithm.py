@@ -277,7 +277,7 @@ class NeuronTracker:
         return path
 
     def _trace_single_direction(self, skeleton, frame, start, y_center,
-                                 go_left=True, avoid_points=None):
+                                 go_left=True, avoid_points=None, initial_dir=None):
         """
         单向追踪（带方向动量）
 
@@ -288,9 +288,7 @@ class NeuronTracker:
             y_center: Y中心（限制偏移）
             go_left: True=向左, False=向右
             avoid_points: 要避开的点集合
-
-        返回:
-            list: 轨迹点列表
+            initial_dir: 初始方向向量 (dy, dx)，用于保持方向连续性
         """
         if start is None:
             return []
@@ -304,7 +302,10 @@ class NeuronTracker:
 
         while True:
             # 计算当前方向
-            current_dir = self._get_direction(traj)
+            if len(traj) < 3 and initial_dir is not None:
+                current_dir = initial_dir
+            else:
+                current_dir = self._get_direction(traj)
 
             # 搜索候选点
             candidates = []
@@ -344,6 +345,14 @@ class NeuronTracker:
                         if dist > 0:
                             cand_dir = (dy / dist, dx / dist)
                             dir_score = current_dir[0] * cand_dir[0] + current_dir[1] * cand_dir[1]
+                            
+                            # 强制方向约束：禁止锐角转向
+                            # dir_score是余弦值。0.2 约等于 78度。小于此值表示转向过大。
+                            # 对于跨帧生长，我们期望非常平滑，所以可以设置较高阈值，例如 0.5 (60度)
+                            # 但考虑到像素网格的离散性，太高可能会断裂。0.2 是一个保守的安全值。
+                            if dir_score < 0.2:
+                                continue
+                                
                             base_score += dir_score * self.direction_weight
 
                         candidates.append(((ny, nx), base_score))
@@ -410,8 +419,15 @@ class NeuronTracker:
 
         y_center = start_point[0]
 
-        left = self._trace_single_direction(skeleton, frame, start_point, y_center, go_left=True)
-        right = self._trace_single_direction(skeleton, frame, start_point, y_center, go_left=False)
+        # 初始向左，默认方向 (0, -1)
+        left = self._trace_single_direction(
+            skeleton, frame, start_point, y_center, 
+            go_left=True, initial_dir=(0, -1))
+        
+        # 初始向右，默认方向 (0, 1)
+        right = self._trace_single_direction(
+            skeleton, frame, start_point, y_center, 
+            go_left=False, initial_dir=(0, 1))
 
         full = left[::-1] + right[1:] if len(right) > 1 else left[::-1]
         return full
@@ -420,11 +436,15 @@ class NeuronTracker:
         """在生长端找新点（原有方法）"""
         if not trajectory:
             return []
+            
+        # 计算当前轨迹末端的方向
+        current_dir = self._get_direction(trajectory)
 
         return self._trace_single_direction(
             skeleton, frame,
             trajectory[-1],
             y_center,
             go_left=False,
-            avoid_points=set(trajectory)
+            avoid_points=set(trajectory),
+            initial_dir=current_dir
         )
