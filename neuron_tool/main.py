@@ -503,7 +503,8 @@ class NeuronTool:
         cv2.resizeWindow(win, 1280, 720)
 
         # 追踪循环
-        for fidx in range(start_frame, self.video.total_frames):
+        frame_delay = int(1000 / self.video.fps) if self.video.fps > 0 else 30
+        for fidx in range(0, self.video.total_frames):
             if not self.is_tracking:
                 print("追踪被停止")
                 break
@@ -527,7 +528,7 @@ class NeuronTool:
 
             # 绘制并写入
             vis = self.vis.draw_frame_on_video(
-                self.video.current_frame, fidx, self.video.total_frames)
+                self.video.current_frame, fidx, self.video.total_frames, fidx >= start_frame)
             self.video.write_frame(vis)
 
             # 显示进度
@@ -535,18 +536,27 @@ class NeuronTool:
             display = cv2.resize(vis, None, fx=scale, fy=scale)
             cv2.imshow(win, display)
 
-            if cv2.waitKey(1) & 0xFF in [ord('q'), 27]:
+            if cv2.waitKey(frame_delay) & 0xFF in [ord('q'), 27]:
                 self.is_tracking = False
                 break
 
         # 清理
         self.video.stop_writer()
-        cv2.destroyWindow(win)
         self.is_tracking = False
 
         print(f"\n✓ 追踪完成! 视频: {output_path}")
         for nid, traj in self.data.neuron_trajectories.items():
             print(f"  N{nid}: {len(traj)} 点")
+
+        last_frame = self.vis.draw_frame_on_video(
+            self.video.current_frame, self.video.current_frame_idx, self.video.total_frames)
+        scale = min(1.0, 1280 / self.video.frame_width)
+        display = cv2.resize(last_frame, None, fx=scale, fy=scale)
+        while True:
+            cv2.imshow(win, display)
+            if cv2.waitKey(30) & 0xFF in [ord('q'), 27]:
+                break
+        cv2.destroyWindow(win)
 
     def run(self, video_path, data_path=None):
         """

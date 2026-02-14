@@ -201,7 +201,7 @@ class Visualizer:
         cv2.putText(canvas, tips, (10, image_area_h - 8),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.42, Config.COLOR_TEXT_DIM, 1, cv2.LINE_AA)
 
-    def draw_frame_on_video(self, frame, frame_idx, total_frames):
+    def draw_frame_on_video(self, frame, frame_idx, total_frames, draw_trajectories=True):
         """
         在视频帧上绘制轨迹和信息（用于导出）
 
@@ -215,30 +215,28 @@ class Visualizer:
         """
         vis = frame.copy()
 
-        # 绘制所有轨迹
-        for nid, traj in self.data.neuron_trajectories.items():
-            if not traj:
-                continue
+        if draw_trajectories:
+            for nid, traj in self.data.neuron_trajectories.items():
+                if not traj:
+                    continue
 
-            color = self.data.get_neuron_color(nid)
+                color = self.data.get_neuron_color(nid)
 
-            # 绘制线
-            for i in range(len(traj) - 1):
-                p1 = (int(traj[i][1]), int(traj[i][0]))
-                p2 = (int(traj[i + 1][1]), int(traj[i + 1][0]))
-                dist = np.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2)
-                if dist < 30:
-                    cv2.line(vis, p1, p2, color, 2, cv2.LINE_AA)
+                for i in range(len(traj) - 1):
+                    p1 = (int(traj[i][1]), int(traj[i][0]))
+                    p2 = (int(traj[i + 1][1]), int(traj[i + 1][0]))
+                    dist = np.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2)
+                    if dist < 30:
+                        cv2.line(vis, p1, p2, color, 2, cv2.LINE_AA)
 
-            # 起点和终点
-            if traj:
-                start = (int(traj[0][1]), int(traj[0][0]))
-                end = (int(traj[-1][1]), int(traj[-1][0]))
-                cv2.circle(vis, start, 5, color, -1)
-                cv2.circle(vis, end, 7, Config.COLOR_TRAJECTORY_END, -1)
-                cv2.circle(vis, end, 9, Config.COLOR_MARK_HIGHLIGHT, 2)
-                cv2.putText(vis, str(nid), (end[0] + 10, end[1] + 5),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
+                if traj:
+                    start = (int(traj[0][1]), int(traj[0][0]))
+                    end = (int(traj[-1][1]), int(traj[-1][0]))
+                    cv2.circle(vis, start, 5, color, -1)
+                    cv2.circle(vis, end, 7, Config.COLOR_TRAJECTORY_END, -1)
+                    cv2.circle(vis, end, 9, Config.COLOR_MARK_HIGHLIGHT, 2)
+                    cv2.putText(vis, str(nid), (end[0] + 10, end[1] + 5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
 
         # 帧信息
         info = f"Frame: {frame_idx + 1}/{total_frames} | Neurons: {len(self.data.neuron_trajectories)}"
