@@ -620,7 +620,7 @@ class ManualNeuronTracker:
 
 if __name__ == "__main__":
     VIDEO_PATH = r"/neuron_growth_50.mp4"
-    OUTPUT_PATH = r"F:\工作文件\RA\python\项目汇总\神经图像\output\manual_tracking.mp4"
+    OUTPUT_PATH = r"/历史方案/output\manual_tracking.mp4"
 
     tracker = ManualNeuronTracker(
         num_neurons=15,  # 最多标记15根

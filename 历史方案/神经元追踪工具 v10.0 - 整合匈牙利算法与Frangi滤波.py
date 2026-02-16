@@ -255,14 +255,10 @@ class ImageProcessor:
         enhanced, green_mask = self.extract_green_channel(frame)
 
         if use_frangi:
-            # 使用 Frangi 滤波增强
             frangi_resp = self.apply_frangi(enhanced)
-            # 结合绿色掩码
             combined = cv2.bitwise_and(frangi_resp, green_mask)
-            # Otsu 阈值
             _, binary = cv2.threshold(combined, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         else:
-            # 传统方法
             denoised = cv2.medianBlur(enhanced, Config.MEDIAN_KERNEL)
             binary = cv2.adaptiveThreshold(
                 denoised, 255,
@@ -273,7 +269,16 @@ class ImageProcessor:
 
         # 形态学清理
         closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, self.kernel, iterations=2)
-        cleaned = remove_small_objects(closed > 0, min_size=Config.MIN_OBJECT_SIZE)
+
+        # 移除小对象（兼容新旧 skimage 版本）
+        bool_mask = closed > 0
+        try:
+            # skimage >= 0.26: 使用 min_size（仍有效，只是警告）
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", FutureWarning)
+                cleaned = remove_small_objects(bool_mask, min_size=Config.MIN_OBJECT_SIZE)
+        except Exception:
+            cleaned = bool_mask
 
         # 骨架化
         skeleton = skeletonize(cleaned)
@@ -1271,17 +1276,14 @@ class NeuronTool:
     # ==========================================================================
 
     def run_tracking(self):
-        """执行追踪"""
+        """执行追踪（带调试）"""
         if not self.data.marks:
             print("⚠ 没有标记")
             return
 
         print("\n" + "=" * 60)
-        print("神经元追踪 v10.0 (Frangi + Hungarian)")
+        print("神经元追踪 v10.0 (调试模式)")
         print("=" * 60)
-        print(f"  Frangi滤波: {'启用' if self.use_frangi else '禁用'}")
-        print(f"  最大匹配距离: {Config.MAX_MATCH_DIST}")
-        print(f"  方向权重: {Config.DIRECTION_WEIGHT}")
 
         self.data.trajs.clear()
 
@@ -1289,10 +1291,16 @@ class NeuronTool:
         init_f = min(m["frame"] for nd in self.data.marks.values() for m in nd["marks"])
         print(f"  初始帧: {init_f + 1}")
 
-        # 轨迹历史快照
+        # ========== 调试：检查标记 ==========
+        print("\n[DEBUG] 标记信息:")
+        for nid, nd in self.data.marks.items():
+            marks = nd["marks"]
+            print(f"  N{nid}: {len(marks)} 个标记")
+            for m in marks:
+                print(f"    帧{m['frame'] + 1}: ({m['x']}, {m['y']})")
+
         history = {}
 
-        # ========== 追踪循环 ==========
         for fidx in range(self.vid.total):
             self.vid.read(fidx)
 
@@ -1303,28 +1311,48 @@ class NeuronTool:
             # 处理图像
             skeleton = self.ip.process_frame(self.vid.frame, use_frangi=self.use_frangi)
 
+            # ========== 调试：检查骨架 ==========
             if fidx == init_f:
-                # 初始化：从标记初始化轨迹
+                skel_count = np.sum(skeleton)
+                print(f"\n[DEBUG] 初始帧骨架:")
+                print(f"  骨架像素数: {skel_count}")
+
+                if skel_count == 0:
+                    print("  ❌ 骨架为空！检查图像处理参数")
+                    # 尝试不用Frangi
+                    print("  尝试禁用Frangi...")
+                    skeleton = self.ip.process_frame(self.vid.frame, use_frangi=False)
+                    skel_count = np.sum(skeleton)
+                    print(f"  禁用Frangi后骨架像素数: {skel_count}")
+
+                # 初始化轨迹
                 for nid in self.data.marks:
                     ms = self.data.get_marks(nid)
                     if not ms:
                         continue
 
+                    print(f"\n[DEBUG] N{nid} 初始化:")
+                    print(f"  标记数: {len(ms)}")
+
+                    # 检查每个标记点
+                    for m in ms:
+                        pt = self.ip.nearest_skeleton_point(skeleton, self.vid.frame, (m["x"], m["y"]))
+                        is_g = self.ip.is_green(self.vid.frame, m["y"], m["x"])
+                        print(f"  标记({m['x']},{m['y']}): 绿色={is_g}, 最近骨架点={pt}")
+
                     traj = self.tracker.initialize_from_markers(skeleton, self.vid.frame, ms)
+                    print(f"  初始轨迹长度: {len(traj)}")
 
                     if len(traj) >= 5:
                         traj = sorted(traj, key=lambda p: p[1])
                         self.data.trajs[nid] = traj
-                        print(f"  N{nid}: 初始化 {len(traj)} 点")
+                        print(f"  ✓ N{nid}: 初始化成功 {len(traj)} 点")
+                    else:
+                        print(f"  ✗ N{nid}: 轨迹太短 ({len(traj)} < 5)，跳过")
 
                 history[fidx] = {nid: list(t) for nid, t in self.data.trajs.items()}
             else:
-                # 后续帧：使用匈牙利匹配 + 生长追踪
-
-                # 提取当前帧尖端
-                current_tips = self.topo.extract_tips(skeleton)
-
-                # 对每个已有轨迹进行生长追踪
+                # 生长追踪
                 for nid, traj in list(self.data.trajs.items()):
                     if not traj:
                         continue
@@ -1346,7 +1374,14 @@ class NeuronTool:
         for nid, t in self.data.trajs.items():
             print(f"  N{nid}: {len(t)} 点")
 
-        # ========== 播放动画 ==========
+        if not self.data.trajs:
+            print("\n⚠ 没有成功初始化任何轨迹！")
+            print("可能原因:")
+            print("  1. 标记点不在绿色区域")
+            print("  2. 骨架提取失败")
+            print("  3. GREEN_THRESHOLD 设置过高")
+            return
+
         self._play_animation(history)
 
     def _play_animation(self, history):
@@ -1517,7 +1552,7 @@ class NeuronTool:
 # ============================================================================
 
 if __name__ == "__main__":
-    VIDEO_PATH = r"F:\工作文件\RA\python\项目汇总\神经图像\neuron_growth_50.mp4"
+    VIDEO_PATH = r"/neuron_growth_50.mp4"
 
     tool = NeuronTool()
     tool.run(VIDEO_PATH)

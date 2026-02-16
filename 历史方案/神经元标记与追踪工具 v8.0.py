@@ -861,7 +861,7 @@ class NeuronTool:
 # ============================================================================
 
 if __name__ == "__main__":
-    VIDEO_PATH = r"F:\工作文件\RA\python\项目汇总\神经图像\neuron_growth_50.mp4"
+    VIDEO_PATH = r"/neuron_growth_50.mp4"
 
     tool = NeuronTool()
     tool.run(VIDEO_PATH)

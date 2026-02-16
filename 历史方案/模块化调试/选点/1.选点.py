@@ -412,8 +412,8 @@ class NeuronMarkerTool:
 
 
 if __name__ == "__main__":
-    VIDEO_PATH = r"F:\工作文件\RA\python\项目汇总\神经图像\neuron_growth_50.mp4"
-    MARKS_PATH = r"F:\工作文件\RA\python\项目汇总\神经图像\neuron_marks.json"
+    VIDEO_PATH = r"/neuron_growth_50.mp4"
+    MARKS_PATH = r"/neuron_marks.json"
 
     tool = NeuronMarkerTool(max_neurons=15)
     tool.run(VIDEO_PATH, MARKS_PATH)
