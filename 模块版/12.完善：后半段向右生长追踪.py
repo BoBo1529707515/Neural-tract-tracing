@@ -28,7 +28,7 @@ NEURON_COLORS = generate_distinct_colors(99)
 
 
 class NeuronTracker:
-    """神经元追踪 - 统一轨迹版"""
+    """神经元追踪 - 前半段向左统一 + 后半段向右生长"""
 
     def __init__(self):
         self.frames = []
@@ -40,15 +40,14 @@ class NeuronTracker:
         self.linearity_weight = 2.0
         self.left_margin = 3
         self.edge_margin = 3
+        self.right_margin = 3  # 右边界
         self.max_turn_angle = 60
         self.max_search_radius = 150
         self.search_radius_step = 20
 
         self.waypoint_capture_radius = 25
 
-        # markers: {neuron_id: {frame_idx: [(x,y), ...]}}
         self.markers = defaultdict(lambda: defaultdict(list))
-        # tracking_results: {neuron_id: {'unified_path': [...], 'waypoints': [...], ...}}
         self.tracking_results = {}
 
     def load_frames(self, input_dir, progress_callback=None):
@@ -93,12 +92,10 @@ class NeuronTracker:
         return dict(self.markers.get(neuron_id, {}))
 
     def get_all_waypoints(self, neuron_id):
-        """获取该神经元在所有帧的所有标记点（去重）"""
         markers = self.get_neuron_markers(neuron_id)
         all_points = []
         for pts in markers.values():
             all_points.extend(pts)
-        # 去重（距离小于5的视为同一点）
         unique = []
         for p in all_points:
             is_dup = False
@@ -117,7 +114,8 @@ class NeuronTracker:
             return False
         return self.frames[frame_idx][int(y), int(x)] > self.brightness_threshold
 
-    def check_boundary_reached(self, x, y):
+    def check_left_boundary(self, x, y):
+        """检查是否到达左/上/下边界"""
         if x <= self.left_margin:
             return True, 'left'
         if y <= self.edge_margin:
@@ -126,15 +124,23 @@ class NeuronTracker:
             return True, 'bottom'
         return False, None
 
+    def check_right_boundary(self, x, y):
+        """检查是否到达右边界"""
+        if x >= self.width - self.right_margin:
+            return True, 'right'
+        if y <= self.edge_margin:
+            return True, 'top'
+        if y >= self.height - self.edge_margin:
+            return True, 'bottom'
+        return False, None
+
     def find_best_frame(self, neuron_id, waypoints):
-        """找信号最强的帧作为代表帧"""
         markers = self.get_neuron_markers(neuron_id)
         marked_frames = list(markers.keys())
 
         best_frame = marked_frames[0] if marked_frames else 0
         best_score = 0
 
-        # 检查所有标记帧及其附近
         check_frames = set()
         for f in marked_frames:
             for df in range(-10, 11):
@@ -145,7 +151,6 @@ class NeuronTracker:
             frame = self.frames[f]
             score = 0
             for wp in waypoints:
-                # 计算该点附近的亮度
                 x, y = wp
                 for dy in range(-5, 6):
                     for dx in range(-5, 6):
@@ -179,7 +184,8 @@ class NeuronTracker:
         cos_angle = (dx_sum * new_dx + dy_sum * new_dy) / (dir_len * new_len)
         return (cos_angle + 1) / 2
 
-    def find_candidates_toward_target(self, frame_idx, cx, cy, path, direction, visited, target=None, radius=None):
+    def find_candidates_leftward(self, frame_idx, cx, cy, path, direction, visited, target=None, radius=None):
+        """向左寻找候选点"""
         if radius is None:
             radius = self.search_radius
         frame = self.frames[frame_idx]
@@ -231,8 +237,52 @@ class NeuronTracker:
 
         return candidates
 
-    def trace_segment(self, frame_idx, start_x, start_y, target=None, initial_direction=None, max_steps=3000):
-        """追踪一段路径"""
+    def find_candidates_rightward(self, frame_idx, cx, cy, path, direction, visited, radius=None):
+        """向右寻找候选点（只能向右或垂直，不能向左）"""
+        if radius is None:
+            radius = self.search_radius
+        frame = self.frames[frame_idx]
+        candidates = []
+        search_range = int(radius)
+
+        for dy in range(-search_range, search_range + 1):
+            # dx >= 0：只能向右或垂直
+            for dx in range(0, search_range + 1):
+                if dx == 0 and dy == 0:
+                    continue
+                dist = sqrt(dx ** 2 + dy ** 2)
+                if dist > radius:
+                    continue
+                nx, ny = cx + dx, cy + dy
+                if (nx, ny) in visited:
+                    continue
+                if nx < 0 or nx >= self.width or ny < 0 or ny >= self.height:
+                    continue
+                brightness = frame[ny, nx]
+                if brightness < self.brightness_threshold:
+                    continue
+
+                linearity = self.compute_linearity(path, (nx, ny))
+                score = brightness * (linearity ** self.linearity_weight) / (dist + 0.5)
+
+                # 向右加分
+                if dx > 0:
+                    right_bonus = dx / (dist + 0.1)
+                    score *= (1 + right_bonus)
+
+                if direction:
+                    dir_x, dir_y = direction
+                    dir_len = sqrt(dir_x ** 2 + dir_y ** 2)
+                    if dir_len > 0:
+                        cos_a = (dx * dir_x + dy * dir_y) / (dist * dir_len)
+                        score *= (1 + (cos_a + 1) / 2)
+
+                candidates.append((nx, ny, score, dx, dy))
+
+        return candidates
+
+    def trace_segment_left(self, frame_idx, start_x, start_y, target=None, initial_direction=None, max_steps=3000):
+        """向左追踪一段路径"""
         path = [(int(start_x), int(start_y))]
         visited = set()
         visited.add((int(start_x), int(start_y)))
@@ -248,18 +298,18 @@ class NeuronTracker:
                     reached_target = True
                     break
 
-            reached, boundary_type = self.check_boundary_reached(cx, cy)
+            reached, boundary_type = self.check_left_boundary(cx, cy)
             if reached:
                 boundary_reached = boundary_type
                 break
 
-            candidates = self.find_candidates_toward_target(
+            candidates = self.find_candidates_leftward(
                 frame_idx, cx, cy, path, direction, visited, target=target
             )
 
             if not candidates:
                 for radius in range(self.search_radius, self.max_search_radius + 1, self.search_radius_step):
-                    candidates = self.find_candidates_toward_target(
+                    candidates = self.find_candidates_leftward(
                         frame_idx, cx, cy, path, direction, visited, target=target, radius=radius
                     )
                     if candidates:
@@ -312,6 +362,79 @@ class NeuronTracker:
 
         return path, boundary_reached, reached_target, direction
 
+    def trace_segment_right(self, frame_idx, start_x, start_y, initial_direction=None, max_steps=500):
+        """向右追踪一段路径（用于生长追踪）"""
+        path = [(int(start_x), int(start_y))]
+        visited = set()
+        visited.add((int(start_x), int(start_y)))
+        cx, cy = int(start_x), int(start_y)
+        direction = initial_direction if initial_direction else (1, 0)
+        boundary_reached = None
+
+        for step in range(max_steps):
+            reached, boundary_type = self.check_right_boundary(cx, cy)
+            if reached:
+                boundary_reached = boundary_type
+                break
+
+            candidates = self.find_candidates_rightward(
+                frame_idx, cx, cy, path, direction, visited
+            )
+
+            if not candidates:
+                for radius in range(self.search_radius, self.max_search_radius + 1, self.search_radius_step):
+                    candidates = self.find_candidates_rightward(
+                        frame_idx, cx, cy, path, direction, visited, radius=radius
+                    )
+                    if candidates:
+                        break
+
+            if not candidates:
+                break
+
+            candidates.sort(key=lambda x: -x[2])
+            chosen = candidates[0]
+            nx, ny = chosen[0], chosen[1]
+            dx, dy = chosen[3], chosen[4]
+
+            # 强制向右：如果dx < 0就跳过（但find_candidates_rightward已经保证dx >= 0）
+            if dx < 0:
+                right_only = [c for c in candidates if c[3] >= 0]
+                if right_only:
+                    chosen = max(right_only, key=lambda x: x[2])
+                    nx, ny = chosen[0], chosen[1]
+                    dx, dy = chosen[3], chosen[4]
+                else:
+                    break
+
+            if (nx, ny) in visited:
+                remaining = [c for c in candidates if (c[0], c[1]) not in visited and c[3] >= 0]
+                if remaining:
+                    chosen = max(remaining, key=lambda x: x[2])
+                    nx, ny = chosen[0], chosen[1]
+                    dx, dy = chosen[3], chosen[4]
+                else:
+                    break
+
+            path.append((nx, ny))
+            visited.add((nx, ny))
+
+            dist = sqrt(dx ** 2 + dy ** 2)
+            if dist > 0:
+                new_dir = (dx / dist, dy / dist)
+                alpha = 0.3
+                direction = (
+                    direction[0] * (1 - alpha) + new_dir[0] * alpha,
+                    direction[1] * (1 - alpha) + new_dir[1] * alpha
+                )
+                dlen = sqrt(direction[0] ** 2 + direction[1] ** 2)
+                if dlen > 0:
+                    direction = (direction[0] / dlen, direction[1] / dlen)
+
+            cx, cy = nx, ny
+
+        return path, boundary_reached, direction
+
     def connect_points_directly(self, frame_idx, start, end):
         """简单连接两点"""
         path = [start]
@@ -363,11 +486,8 @@ class NeuronTracker:
 
         return path
 
-    def trace_unified_path(self, frame_idx, waypoints):
-        """
-        在指定帧中追踪经过所有必经点的统一路径
-        waypoints: 按x从大到小排序的必经点
-        """
+    def trace_left_unified(self, frame_idx, waypoints):
+        """向左追踪经过所有必经点的统一路径"""
         if not waypoints:
             return [], None
 
@@ -379,7 +499,7 @@ class NeuronTracker:
             start = waypoints[i]
             target = waypoints[i + 1] if i + 1 < len(waypoints) else None
 
-            segment, boundary, reached_target, direction = self.trace_segment(
+            segment, boundary, reached_target, direction = self.trace_segment_left(
                 frame_idx, start[0], start[1], target=target, initial_direction=direction
             )
 
@@ -388,7 +508,6 @@ class NeuronTracker:
                     segment = segment[1:]
             full_path.extend(segment)
 
-            # 没到达目标时直接连接
             if target and not reached_target:
                 last_pt = full_path[-1] if full_path else start
                 if last_pt != target:
@@ -400,7 +519,6 @@ class NeuronTracker:
                 boundary_reached = boundary
                 break
 
-        # 确保所有必经点都在路径中
         for wp in waypoints:
             found = False
             for i, pt in enumerate(full_path):
@@ -408,7 +526,6 @@ class NeuronTracker:
                     found = True
                     break
             if not found:
-                # 找最近位置插入
                 min_dist = float('inf')
                 insert_idx = len(full_path)
                 for idx, pt in enumerate(full_path):
@@ -421,11 +538,9 @@ class NeuronTracker:
         return full_path, boundary_reached
 
     def smooth_path_preserve_waypoints(self, path, waypoints, window=3):
-        """平滑路径但保留必经点"""
         if len(path) <= window:
             return path
 
-        # 标记必经点的索引
         waypoint_indices = set()
         for wp in waypoints:
             for i, pt in enumerate(path):
@@ -447,18 +562,38 @@ class NeuronTracker:
 
         return smoothed
 
+    def find_growth_start_point(self, frame_idx, prev_end_point, search_radius=20):
+        """在当前帧找到最接近上一帧末端的亮点作为生长起点"""
+        px, py = prev_end_point
+        best_pt = None
+        best_score = -1
+        frame = self.frames[frame_idx]
+
+        for dy in range(-search_radius, search_radius + 1):
+            for dx in range(-search_radius, search_radius + 1):
+                nx, ny = px + dx, py + dy
+                if 0 <= nx < self.width and 0 <= ny < self.height:
+                    brightness = frame[ny, nx]
+                    if brightness > self.brightness_threshold:
+                        dist = sqrt(dx ** 2 + dy ** 2)
+                        # 优先选择靠右且靠近的点
+                        score = brightness * (1 + dx * 0.1) / (dist + 1)
+                        if score > best_score:
+                            best_score = score
+                            best_pt = (nx, ny)
+
+        return best_pt if best_pt else prev_end_point
+
     def compute_neuron_trajectory(self, neuron_id):
         """
-        计算神经元的统一轨迹
-        - 收集所有帧的标记点作为必经点
-        - 在最佳帧中追踪一条经过所有点的路径
-        - 这条路径应用到所有帧
+        计算神经元轨迹：
+        1. 前半段：向左追踪到边界（统一轨迹）
+        2. 后半段：向右逐帧生长
         """
         markers = self.get_neuron_markers(neuron_id)
         if not markers:
             return None
 
-        # 收集所有必经点
         all_waypoints = self.get_all_waypoints(neuron_id)
         if not all_waypoints:
             return None
@@ -466,71 +601,139 @@ class NeuronTracker:
         # 按x从大到小排序（从右到左）
         all_waypoints = sorted(all_waypoints, key=lambda p: -p[0])
 
+        # 找标记帧范围
+        marked_frames = sorted(markers.keys())
+        first_marked_frame = min(marked_frames)
+        last_marked_frame = max(marked_frames)
+
         print(f"\n{'=' * 60}")
-        print(f"计算神经元 N{neuron_id} 统一轨迹")
-        print(f"标记帧: {list(markers.keys())}")
+        print(f"计算神经元 N{neuron_id} 轨迹")
+        print(f"标记帧: {marked_frames}")
         print(f"必经点({len(all_waypoints)}个): {all_waypoints}")
         print(f"{'=' * 60}")
 
-        # 找最佳帧
+        # ========== 前半段：向左追踪到边界 ==========
         best_frame = self.find_best_frame(neuron_id, all_waypoints)
-        print(f"代表帧: {best_frame}")
+        print(f"\n[前半段] 代表帧: {best_frame}, 向左追踪")
 
-        # 在最佳帧中追踪统一路径
-        unified_path, boundary = self.trace_unified_path(best_frame, all_waypoints)
+        left_path, left_boundary = self.trace_left_unified(best_frame, all_waypoints)
 
-        if not unified_path:
-            print("  追踪失败！")
+        if not left_path:
+            print("  前半段追踪失败！")
             return None
 
-        # 平滑
-        if len(unified_path) > 5:
-            unified_path = self.smooth_path_preserve_waypoints(unified_path, all_waypoints)
+        if len(left_path) > 5:
+            left_path = self.smooth_path_preserve_waypoints(left_path, all_waypoints)
 
         # 确保路径方向（从右到左）
-        if len(unified_path) >= 2 and unified_path[0][0] < unified_path[-1][0]:
-            unified_path = unified_path[::-1]
+        if len(left_path) >= 2 and left_path[0][0] < left_path[-1][0]:
+            left_path = left_path[::-1]
 
-        # 验证必经点
-        passed = 0
-        for wp in all_waypoints:
-            for pt in unified_path:
-                if sqrt((pt[0] - wp[0]) ** 2 + (pt[1] - wp[1]) ** 2) < 5:
-                    passed += 1
-                    break
+        # 前半段的起点（最右边的点）作为后半段的基准
+        growth_base_point = left_path[0]  # 最右端
 
-        print(f"统一路径: {len(unified_path)}点, 经过{passed}/{len(all_waypoints)}个必经点")
+        print(f"  前半段: {len(left_path)}点, 左端到达{left_boundary or '未知'}")
+        print(f"  生长基准点: {growth_base_point}")
 
-        # 边界状态
-        end_pt = unified_path[0] if unified_path else (0, 0)
-        final_boundary_reached, final_boundary_type = self.check_boundary_reached(end_pt[0], end_pt[1])
+        # ========== 后半段：向右逐帧生长 ==========
+        print(f"\n[后半段] 从帧{first_marked_frame}开始向右生长")
 
-        if final_boundary_reached:
-            print(f"✓ 到达{final_boundary_type}边界")
+        # 存储每帧的路径
+        paths_by_frame = {}
 
-        # 生成结果 - 所有帧使用同一条路径
+        # 初始方向（从前半段末端推断）
+        if len(left_path) >= 2:
+            dx = left_path[0][0] - left_path[1][0]
+            dy = left_path[0][1] - left_path[1][1]
+            dist = sqrt(dx ** 2 + dy ** 2)
+            initial_direction = (dx / dist, dy / dist) if dist > 0 else (1, 0)
+        else:
+            initial_direction = (1, 0)
+
+        # 第一个标记帧：只有前半段
+        current_growth_tip = growth_base_point
+        current_direction = initial_direction
+
+        for frame_idx in range(len(self.frames)):
+            if frame_idx < first_marked_frame:
+                # 标记帧之前：只有前半段（静态）
+                paths_by_frame[frame_idx] = {
+                    'left_path': left_path.copy(),
+                    'right_path': [],
+                    'full_path': left_path.copy()
+                }
+            else:
+                # 标记帧及之后：前半段固定 + 后半段向右生长
+
+                # 在当前帧寻找生长点
+                growth_start = self.find_growth_start_point(frame_idx, current_growth_tip)
+
+                # 向右追踪生长
+                right_segment, right_boundary, new_direction = self.trace_segment_right(
+                    frame_idx, growth_start[0], growth_start[1],
+                    initial_direction=current_direction,
+                    max_steps=200  # 每帧最多生长200步
+                )
+
+                # 更新生长末端
+                if right_segment:
+                    current_growth_tip = right_segment[-1]
+                    current_direction = new_direction
+
+                # 组合完整路径
+                # 注意：left_path是从右到左，right_segment是从左到右
+                # 完整路径应该是：左边界 ← left_path ← growth_base → right_segment → 右边界
+
+                full_path = left_path.copy()  # 前半段（从右到左）
+
+                if right_segment and len(right_segment) > 1:
+                    # 跳过第一个点（与growth_base重复）
+                    full_path = right_segment[::-1] + left_path[1:]  # 反转right放前面
+
+                paths_by_frame[frame_idx] = {
+                    'left_path': left_path.copy(),
+                    'right_path': right_segment if right_segment else [],
+                    'full_path': full_path,
+                    'growth_tip': current_growth_tip
+                }
+
+                if frame_idx <= first_marked_frame + 5 or frame_idx % 20 == 0:
+                    tip_x = current_growth_tip[0] if current_growth_tip else 0
+                    print(f"  帧{frame_idx}: 生长末端 x={tip_x}")
+
+        # ========== 生成最终结果 ==========
+        # 计算最大生长范围
+        max_growth_x = max(
+            p['growth_tip'][0] if 'growth_tip' in p and p['growth_tip'] else growth_base_point[0]
+            for p in paths_by_frame.values()
+        )
+
         result = {
-            'unified_path': unified_path,
+            'left_path': left_path,  # 前半段统一路径
+            'growth_base': growth_base_point,  # 生长基准点
+            'paths_by_frame': paths_by_frame,  # 每帧的路径
             'waypoints': all_waypoints,
-            'best_frame': best_frame,
-            'boundary_info': (final_boundary_reached, final_boundary_type),
-            'markers': dict(markers),
-            'passed_waypoints': passed
+            'left_boundary': left_boundary,
+            'first_marked_frame': first_marked_frame,
+            'max_growth_x': max_growth_x
         }
 
         self.tracking_results[neuron_id] = result
 
-        print(f"完成 N{neuron_id}: 统一路径将应用到所有帧")
+        print(f"\n完成 N{neuron_id}:")
+        print(f"  前半段: {len(left_path)}点 → {left_boundary or '边界'}")
+        print(f"  后半段: 从帧{first_marked_frame}开始生长")
+        print(f"  最大生长: x={max_growth_x}")
 
         return result
 
 
 class TrackerGUI:
-    """GUI - 统一轨迹版"""
+    """GUI - 前半段统一 + 后半段生长"""
 
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("神经元追踪 - 统一轨迹版")
+        self.root.title("神经元追踪 - 向左统一 + 向右生长")
         self.root.geometry("1550x980")
 
         self.tracker = NeuronTracker()
@@ -565,10 +768,10 @@ class TrackerGUI:
         self.canvas = tk.Canvas(left, bg='black')
         self.canvas.grid(row=0, column=0, sticky="nsew")
 
-        right = ttk.Frame(self.main_paned, width=380)
+        right = ttk.Frame(self.main_paned, width=400)
         self.main_paned.add(right, weight=0)
 
-        self.ctrl_canvas = tk.Canvas(right, width=360)
+        self.ctrl_canvas = tk.Canvas(right, width=380)
         scrollbar = ttk.Scrollbar(right, orient="vertical", command=self.ctrl_canvas.yview)
         self.ctrl_frame = ttk.Frame(self.ctrl_canvas)
         self.ctrl_canvas.configure(yscrollcommand=scrollbar.set)
@@ -593,12 +796,12 @@ class TrackerGUI:
         f1 = ttk.LabelFrame(p, text="📁 文件", padding=5)
         f1.pack(fill="x", pady=pad, padx=3)
         ttk.Label(f1, text="输入:").grid(row=0, column=0, sticky="w")
-        self.input_entry = ttk.Entry(f1, width=24)
+        self.input_entry = ttk.Entry(f1, width=26)
         self.input_entry.insert(0, self.input_dir)
         self.input_entry.grid(row=0, column=1, sticky="ew")
         ttk.Button(f1, text="...", command=self.browse_input, width=3).grid(row=0, column=2)
         ttk.Label(f1, text="输出:").grid(row=1, column=0, sticky="w", pady=2)
-        self.output_entry = ttk.Entry(f1, width=24)
+        self.output_entry = ttk.Entry(f1, width=26)
         self.output_entry.insert(0, self.output_dir)
         self.output_entry.grid(row=1, column=1, sticky="ew")
         ttk.Button(f1, text="...", command=self.browse_output, width=3).grid(row=1, column=2)
@@ -656,16 +859,22 @@ class TrackerGUI:
 
         ttk.Label(f4, text="数字键1-9快速切换").pack(anchor="w")
 
+        # 追踪模式说明
+        f_mode = ttk.LabelFrame(p, text="📐 追踪模式", padding=5)
+        f_mode.pack(fill="x", pady=pad, padx=3)
+        ttk.Label(f_mode,
+                  text="前半段: 向左追踪到边界（统一）\n后半段: 随时间向右生长（逐帧）\n\n时间增加 → 轨迹只能向右延伸",
+                  font=("", 9), justify="left", foreground="darkblue").pack(anchor="w")
+
         # 标记操作
         f5 = ttk.LabelFrame(p, text="📍 标记必经点", padding=5)
         f5.pack(fill="x", pady=pad, padx=3)
 
-        ttk.Label(f5,
-                  text="左键：添加必经点（任意帧）\n右键：删除当前帧最后标记\n\n⚠️ 所有标记点将合并，\n生成一条统一轨迹应用到所有帧",
-                  font=("", 9), justify="left", foreground="darkblue").pack(anchor="w")
+        ttk.Label(f5, text="左键：添加必经点\n右键：删除当前帧最后标记",
+                  font=("", 9), justify="left").pack(anchor="w")
 
         self.marker_info = tk.StringVar(value="当前神经元无标记")
-        ttk.Label(f5, textvariable=self.marker_info, foreground="blue", wraplength=320).pack(anchor="w", pady=3)
+        ttk.Label(f5, textvariable=self.marker_info, foreground="blue", wraplength=340).pack(anchor="w", pady=3)
 
         btn_row = ttk.Frame(f5)
         btn_row.pack(fill="x", pady=3)
@@ -674,7 +883,7 @@ class TrackerGUI:
         ttk.Button(btn_row, text="清除全部", command=self.clear_all_markers, width=10).pack(side="left", padx=2)
 
         # 计算轨迹
-        f6 = ttk.LabelFrame(p, text="🔬 计算统一轨迹", padding=5)
+        f6 = ttk.LabelFrame(p, text="🔬 计算轨迹", padding=5)
         f6.pack(fill="x", pady=pad, padx=3)
 
         btn_row2 = ttk.Frame(f6)
@@ -684,7 +893,7 @@ class TrackerGUI:
         ttk.Button(btn_row2, text="▶▶ 计算全部", command=self.compute_all_neurons, width=12).pack(side="left", padx=2)
 
         self.compute_info = tk.StringVar(value="")
-        ttk.Label(f6, textvariable=self.compute_info, foreground="green", wraplength=320).pack(anchor="w", pady=3)
+        ttk.Label(f6, textvariable=self.compute_info, foreground="green", wraplength=340).pack(anchor="w", pady=3)
 
         btn_row3 = ttk.Frame(f6)
         btn_row3.pack(fill="x", pady=3)
@@ -703,10 +912,6 @@ class TrackerGUI:
         ttk.Label(g, text="搜索半径:").grid(row=0, column=2, sticky="w", padx=(8, 0))
         self.radius_var = tk.StringVar(value="30")
         ttk.Entry(g, textvariable=self.radius_var, width=5).grid(row=0, column=3)
-
-        ttk.Label(g, text="捕获半径:").grid(row=1, column=0, sticky="w", pady=2)
-        self.capture_var = tk.StringVar(value="25")
-        ttk.Entry(g, textvariable=self.capture_var, width=5).grid(row=1, column=1)
 
         ttk.Button(f7, text="应用参数", command=self.apply_params).pack(pady=3)
 
@@ -736,7 +941,7 @@ class TrackerGUI:
         f10 = ttk.LabelFrame(p, text="📌 状态", padding=5)
         f10.pack(fill="x", pady=pad, padx=3)
         self.status = tk.StringVar(value="请加载帧")
-        ttk.Label(f10, textvariable=self.status, wraplength=320, foreground="blue").pack(fill="x")
+        ttk.Label(f10, textvariable=self.status, wraplength=340, foreground="blue").pack(fill="x")
         self.progress = ttk.Progressbar(f10, mode='determinate')
         self.progress.pack(fill="x", pady=3)
 
@@ -921,7 +1126,6 @@ class TrackerGUI:
         try:
             self.tracker.brightness_threshold = int(self.thresh_var.get())
             self.tracker.search_radius = int(self.radius_var.get())
-            self.tracker.waypoint_capture_radius = int(self.capture_var.get())
         except:
             pass
 
@@ -932,7 +1136,7 @@ class TrackerGUI:
             return
 
         self.apply_params()
-        self.status.set(f"计算 N{self.current_neuron_id} 统一轨迹...")
+        self.status.set(f"计算 N{self.current_neuron_id} 轨迹...")
         self.root.update()
 
         result = self.tracker.compute_neuron_trajectory(self.current_neuron_id)
@@ -941,17 +1145,18 @@ class TrackerGUI:
             self.preview_result = result
             self.preview_neuron_id = self.current_neuron_id
 
-            br, bt = result['boundary_info']
-            boundary_str = f"→{bt}" if br else ""
-            wp_total = len(result['waypoints'])
-            wp_passed = result['passed_waypoints']
+            left_len = len(result['left_path'])
+            wp_count = len(result['waypoints'])
+            max_x = result['max_growth_x']
+            first_frame = result['first_marked_frame']
 
             self.compute_info.set(
-                f"N{self.current_neuron_id}: 统一轨迹 {len(result['unified_path'])}点\n"
-                f"必经点: {wp_passed}/{wp_total} {boundary_str}\n"
+                f"N{self.current_neuron_id}:\n"
+                f"前半段: {left_len}点 → {result['left_boundary'] or '边界'}\n"
+                f"后半段: 从帧{first_frame}开始生长, 最远x={max_x}\n"
                 f"Enter确认 / Esc取消"
             )
-            self.status.set("预览就绪 - 所有帧将使用同一轨迹")
+            self.status.set("预览就绪")
         else:
             self.compute_info.set("计算失败")
             self.status.set("未找到有效轨迹")
@@ -982,7 +1187,7 @@ class TrackerGUI:
         if self.preview_result and self.preview_neuron_id:
             self.tracker.tracking_results[self.preview_neuron_id] = self.preview_result
             self.update_result_list()
-            self.status.set(f"已确认 N{self.preview_neuron_id} - 统一轨迹应用到所有帧")
+            self.status.set(f"已确认 N{self.preview_neuron_id}")
             self.preview_result = None
             self.preview_neuron_id = None
             self.compute_info.set("")
@@ -1000,11 +1205,10 @@ class TrackerGUI:
     def update_result_list(self):
         self.result_list.delete(0, tk.END)
         for nid, result in sorted(self.tracker.tracking_results.items()):
-            br, bt = result['boundary_info']
-            bstr = f"→{bt}" if br else ""
-            wp = len(result.get('waypoints', []))
-            path_len = len(result.get('unified_path', []))
-            self.result_list.insert(tk.END, f"N{nid}: {path_len}点, {wp}必经点 {bstr}")
+            left_len = len(result.get('left_path', []))
+            max_x = result.get('max_growth_x', 0)
+            lb = result.get('left_boundary', '')
+            self.result_list.insert(tk.END, f"N{nid}: 左{left_len}点→{lb}, 右生长→{max_x}")
 
     def on_result_select(self, e):
         sel = self.result_list.curselection()
@@ -1037,7 +1241,7 @@ class TrackerGUI:
         self.output_dir = self.output_entry.get()
         os.makedirs(self.output_dir, exist_ok=True)
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        path = os.path.join(self.output_dir, "neuron_unified_tracking.mp4")
+        path = os.path.join(self.output_dir, "neuron_growth_tracking.mp4")
         out = cv2.VideoWriter(path, fourcc, 10, (self.tracker.width, self.tracker.height), True)
         for i in range(len(self.tracker.frames)):
             out.write(self.render(i, True))
@@ -1062,16 +1266,20 @@ class TrackerGUI:
             return
         self.output_dir = self.output_entry.get()
         os.makedirs(self.output_dir, exist_ok=True)
-        path = os.path.join(self.output_dir, "neuron_unified_paths.csv")
+        path = os.path.join(self.output_dir, "neuron_growth_paths.csv")
 
         with open(path, 'w') as f:
-            f.write("neuron_id,path_index,x,y,is_waypoint\n")
+            f.write("neuron_id,frame,path_index,x,y,segment\n")
             for nid, result in sorted(self.tracker.tracking_results.items()):
-                waypoints = set(result.get('waypoints', []))
-                unified_path = result.get('unified_path', [])
-                for idx, (x, y) in enumerate(unified_path):
-                    is_wp = 1 if any(sqrt((x - wx) ** 2 + (y - wy) ** 2) < 5 for wx, wy in waypoints) else 0
-                    f.write(f"{nid},{idx},{x},{y},{is_wp}\n")
+                paths_by_frame = result.get('paths_by_frame', {})
+                for frame_idx, frame_data in sorted(paths_by_frame.items()):
+                    # 前半段
+                    for idx, (x, y) in enumerate(frame_data.get('left_path', [])):
+                        f.write(f"{nid},{frame_idx},{idx},{x},{y},left\n")
+                    # 后半段
+                    left_len = len(frame_data.get('left_path', []))
+                    for idx, (x, y) in enumerate(frame_data.get('right_path', [])):
+                        f.write(f"{nid},{frame_idx},{left_len + idx},{x},{y},right\n")
 
         self.status.set(f"数据已保存: {path}")
         messagebox.showinfo("完成", f"导出完成!\n{path}")
@@ -1083,68 +1291,77 @@ class TrackerGUI:
         # 边界线
         cv2.line(vis, (self.tracker.left_margin, 0),
                  (self.tracker.left_margin, self.tracker.height), (0, 100, 0), 1)
+        cv2.line(vis, (self.tracker.width - self.tracker.right_margin, 0),
+                 (self.tracker.width - self.tracker.right_margin, self.tracker.height), (0, 100, 0), 1)
         cv2.line(vis, (0, self.tracker.edge_margin),
                  (self.tracker.width, self.tracker.edge_margin), (0, 100, 0), 1)
         cv2.line(vis, (0, self.tracker.height - self.tracker.edge_margin),
                  (self.tracker.width, self.tracker.height - self.tracker.edge_margin), (0, 100, 0), 1)
 
-        # 已确认的结果 - 统一轨迹
+        # 渲染结果或预览
+        results_to_render = []
+
         for nid, result in self.tracker.tracking_results.items():
+            results_to_render.append((nid, result, False))
+
+        if self.preview_result and self.preview_neuron_id:
+            results_to_render.append((self.preview_neuron_id, self.preview_result, True))
+
+        for nid, result, is_preview in results_to_render:
             color = self.get_neuron_color(nid)
-            unified_path = result.get('unified_path', [])
+            if is_preview:
+                color = (0, 255, 255)  # 预览用黄色
+
+            paths_by_frame = result.get('paths_by_frame', {})
             waypoints = result.get('waypoints', [])
 
-            if unified_path:
-                # 绘制统一轨迹
-                for j in range(1, len(unified_path)):
-                    cv2.line(vis, unified_path[j - 1], unified_path[j], color, 2)
+            if idx in paths_by_frame:
+                frame_data = paths_by_frame[idx]
 
-                # 端点
-                cv2.circle(vis, unified_path[-1], 5, (0, 255, 0), -1)  # 右端（起点）
-                cv2.circle(vis, unified_path[0], 5, color, -1)  # 左端（终点）
-                cv2.putText(vis, f"N{nid}", (unified_path[-1][0] + 5, unified_path[-1][1] - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+                # 绘制前半段（统一部分）
+                left_path = frame_data.get('left_path', [])
+                if left_path:
+                    for j in range(1, len(left_path)):
+                        cv2.line(vis, left_path[j - 1], left_path[j], color, 2)
+                    # 左端点
+                    cv2.circle(vis, left_path[-1], 5, (0, 255, 0), -1)
 
-                # 必经点
+                # 绘制后半段（生长部分）- 用稍浅的颜色
+                right_path = frame_data.get('right_path', [])
+                if right_path:
+                    lighter_color = tuple(min(255, c + 50) for c in color)
+                    for j in range(1, len(right_path)):
+                        cv2.line(vis, right_path[j - 1], right_path[j], lighter_color, 2)
+                    # 生长末端
+                    cv2.circle(vis, right_path[-1], 6, (0, 165, 255), -1)  # 橙色
+
+                # 标注
+                if left_path:
+                    cv2.putText(vis, f"N{nid}", (left_path[0][0] + 5, left_path[0][1] - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+
+            # 必经点
+            if not for_export:
                 for wp in waypoints:
                     cv2.drawMarker(vis, wp, (255, 255, 255), cv2.MARKER_DIAMOND, 10, 2)
-
-        # 预览 - 统一轨迹
-        if not for_export and self.preview_result and self.preview_neuron_id:
-            unified_path = self.preview_result.get('unified_path', [])
-            waypoints = self.preview_result.get('waypoints', [])
-
-            if unified_path:
-                for j in range(1, len(unified_path)):
-                    cv2.line(vis, unified_path[j - 1], unified_path[j], (0, 255, 255), 2)
-
-                cv2.circle(vis, unified_path[-1], 6, (0, 255, 0), -1)
-                cv2.circle(vis, unified_path[0], 6, (0, 255, 255), -1)
-
-                for wp in waypoints:
-                    cv2.drawMarker(vis, wp, (0, 255, 255), cv2.MARKER_DIAMOND, 12, 2)
 
         # 标记点（未计算的）
         if not for_export:
             for nid, frame_markers in self.tracker.markers.items():
                 color = self.get_neuron_color(nid)
 
-                # 该神经元的所有标记点都显示
                 all_pts = []
                 for f, pts in frame_markers.items():
                     for pt in pts:
-                        all_pts.append((pt, f == idx))  # (点, 是否当前帧)
+                        all_pts.append((pt, f == idx))
 
                 for pt, is_current in all_pts:
                     if is_current:
-                        # 当前帧的标记 - 大实心圆
                         cv2.circle(vis, pt, 10, color, -1)
                         cv2.circle(vis, pt, 10, (255, 255, 255), 2)
                     else:
-                        # 其他帧的标记 - 小空心圆
                         cv2.circle(vis, pt, 6, color, 2)
 
-                # 标注神经元编号
                 if all_pts:
                     rightmost = max(all_pts, key=lambda x: x[0][0])
                     cv2.putText(vis, f"N{nid}", (rightmost[0][0] + 12, rightmost[0][1] - 5),
@@ -1185,5 +1402,5 @@ class TrackerGUI:
 
 
 if __name__ == "__main__":
-    print("启动神经元追踪 - 统一轨迹版")
+    print("启动神经元追踪 - 向左统一 + 向右生长")
     TrackerGUI().run()
