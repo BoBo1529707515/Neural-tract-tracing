@@ -7,6 +7,7 @@ from PIL import Image, ImageTk
 from math import sqrt, cos, sin, radians
 from collections import defaultdict
 import colorsys
+import time
 
 DEFAULT_INPUT_DIR = r"F:\工作文件\RA\python\项目汇总\神经图像\05_二次空间去噪\frames_final"
 DEFAULT_OUTPUT_DIR = r"F:\工作文件\RA\python\项目汇总\神经图像\07_生长追踪"
@@ -28,10 +29,11 @@ NEURON_COLORS = generate_distinct_colors(99)
 
 
 class NeuronTracker:
-    """神经元追踪 - 向左统一 + 向右累积生长"""
+    """神经元追踪 - 平滑约束优化版"""
 
     def __init__(self):
         self.frames = []
+        self.frames_np = None
         self.height = 0
         self.width = 0
 
@@ -41,14 +43,20 @@ class NeuronTracker:
         self.left_margin = 3
         self.edge_margin = 3
         self.right_margin = 3
-        self.max_turn_angle = 60
+        self.max_turn_angle = 60  # 最大转角（度）
         self.max_search_radius = 150
         self.search_radius_step = 20
+
+        # 新增：移动速度限制
+        self.max_step_distance = 15  # 每步最大移动距离
+        self.min_step_distance = 1  # 最小移动距离
 
         self.waypoint_capture_radius = 25
 
         self.markers = defaultdict(lambda: defaultdict(list))
         self.tracking_results = {}
+
+        self._search_grids = {}
 
     def load_frames(self, input_dir, progress_callback=None):
         self.frames = []
@@ -68,9 +76,41 @@ class NeuronTracker:
             if progress_callback and i % 10 == 0:
                 progress_callback(i / len(frame_files))
 
+        self.frames_np = np.array(self.frames, dtype=np.uint8)
+
         if progress_callback:
             progress_callback(1.0)
         return True
+
+    def _get_search_grid(self, radius, direction='left', max_dist=None):
+        """获取预计算的搜索网格，支持最大距离限制"""
+        if max_dist is None:
+            max_dist = radius
+
+        key = (radius, direction, max_dist)
+        if key not in self._search_grids:
+            if direction == 'left':
+                dx_range = np.arange(-radius, 1)
+            else:
+                dx_range = np.arange(0, radius + 1)
+            dy_range = np.arange(-radius, radius + 1)
+
+            dx_grid, dy_grid = np.meshgrid(dx_range, dy_range)
+            dx_flat = dx_grid.flatten()
+            dy_flat = dy_grid.flatten()
+
+            dist_flat = np.sqrt(dx_flat ** 2 + dy_flat ** 2)
+
+            # 过滤：距离在范围内、不是原点、不超过最大距离
+            valid = (dist_flat <= radius) & (dist_flat > 0) & (dist_flat <= max_dist)
+
+            self._search_grids[key] = {
+                'dx': dx_flat[valid],
+                'dy': dy_flat[valid],
+                'dist': dist_flat[valid]
+            }
+
+        return self._search_grids[key]
 
     def add_marker(self, neuron_id, frame_idx, x, y):
         self.markers[neuron_id][frame_idx].append((int(x), int(y)))
@@ -112,7 +152,7 @@ class NeuronTracker:
             return False
         if x < 0 or x >= self.width or y < 0 or y >= self.height:
             return False
-        return self.frames[frame_idx][int(y), int(x)] > self.brightness_threshold
+        return self.frames_np[frame_idx, int(y), int(x)] > self.brightness_threshold
 
     def check_left_boundary(self, x, y):
         if x <= self.left_margin:
@@ -132,125 +172,416 @@ class NeuronTracker:
             return True, 'bottom'
         return False, None
 
-    def compute_linearity(self, path, new_point):
+    def is_smooth_transition(self, path, new_point, direction=None):
+        """
+        检查新点是否满足平滑过渡条件
+        返回: (是否平滑, cos夹角值)
+        """
         if len(path) < 2:
-            return 1.0
+            return True, 1.0
+
+        # 计算当前路径方向（最近几个点的平均方向）
         n = min(5, len(path))
         recent = path[-n:]
+        dx_prev, dy_prev = 0, 0
+        for i in range(1, len(recent)):
+            dx_prev += recent[i][0] - recent[i - 1][0]
+            dy_prev += recent[i][1] - recent[i - 1][1]
+
+        prev_len = sqrt(dx_prev ** 2 + dy_prev ** 2)
+        if prev_len == 0:
+            return True, 1.0
+
+        # 计算到新点的方向
+        last = path[-1]
+        dx_new = new_point[0] - last[0]
+        dy_new = new_point[1] - last[1]
+        new_len = sqrt(dx_new ** 2 + dy_new ** 2)
+
+        if new_len == 0:
+            return True, 1.0
+
+        # 计算夹角
+        cos_angle = (dx_prev * dx_new + dy_prev * dy_new) / (prev_len * new_len)
+        min_cos = cos(radians(self.max_turn_angle))
+
+        return cos_angle >= min_cos, cos_angle
+
+    def compute_smoothness_score(self, path, candidate_x, candidate_y):
+        """计算单个候选点的平滑度得分"""
+        if len(path) < 2:
+            return 1.0
+
+        n = min(8, len(path))
+        recent = path[-n:]
+
+        dx_avg, dy_avg = 0, 0
+        for i in range(1, len(recent)):
+            dx_avg += recent[i][0] - recent[i - 1][0]
+            dy_avg += recent[i][1] - recent[i - 1][1]
+
+        dir_len = sqrt(dx_avg ** 2 + dy_avg ** 2)
+        if dir_len == 0:
+            return 1.0
+
+        last = path[-1]
+        dx_new = candidate_x - last[0]
+        dy_new = candidate_y - last[1]
+        new_len = sqrt(dx_new ** 2 + dy_new ** 2)
+
+        if new_len == 0:
+            return 1.0
+
+        cos_angle = (dx_avg * dx_new + dy_avg * dy_new) / (dir_len * new_len)
+        smoothness = (cos_angle + 1) / 2  # 归一化到 0~1
+
+        return smoothness
+
+    def compute_smoothness_vectorized(self, path, candidate_coords):
+        """向量化计算多个候选点的平滑度得分"""
+        if len(path) < 2 or len(candidate_coords) == 0:
+            return np.ones(len(candidate_coords))
+
+        n = min(8, len(path))
+        recent = path[-n:]
+
+        dx_avg, dy_avg = 0, 0
+        for i in range(1, len(recent)):
+            dx_avg += recent[i][0] - recent[i - 1][0]
+            dy_avg += recent[i][1] - recent[i - 1][1]
+
+        dir_len = sqrt(dx_avg ** 2 + dy_avg ** 2)
+        if dir_len == 0:
+            return np.ones(len(candidate_coords))
+
+        last_x, last_y = path[-1]
+
+        cand_arr = np.array(candidate_coords)
+        dx_new = cand_arr[:, 0] - last_x
+        dy_new = cand_arr[:, 1] - last_y
+        new_len = np.sqrt(dx_new ** 2 + dy_new ** 2)
+
+        new_len = np.where(new_len == 0, 1, new_len)
+
+        cos_angle = (dx_avg * dx_new + dy_avg * dy_new) / (dir_len * new_len)
+        smoothness = (cos_angle + 1) / 2
+
+        return smoothness
+
+    def check_smooth_transition_vectorized(self, path, candidate_coords):
+        """向量化检查多个候选点是否满足平滑过渡"""
+        if len(path) < 2 or len(candidate_coords) == 0:
+            return np.ones(len(candidate_coords), dtype=bool)
+
+        n = min(5, len(path))
+        recent = path[-n:]
+
+        dx_prev, dy_prev = 0, 0
+        for i in range(1, len(recent)):
+            dx_prev += recent[i][0] - recent[i - 1][0]
+            dy_prev += recent[i][1] - recent[i - 1][1]
+
+        prev_len = sqrt(dx_prev ** 2 + dy_prev ** 2)
+        if prev_len == 0:
+            return np.ones(len(candidate_coords), dtype=bool)
+
+        last_x, last_y = path[-1]
+
+        cand_arr = np.array(candidate_coords)
+        dx_new = cand_arr[:, 0] - last_x
+        dy_new = cand_arr[:, 1] - last_y
+        new_len = np.sqrt(dx_new ** 2 + dy_new ** 2)
+
+        # 避免除零
+        new_len_safe = np.where(new_len == 0, 1, new_len)
+
+        cos_angle = (dx_prev * dx_new + dy_prev * dy_new) / (prev_len * new_len_safe)
+        min_cos = cos(radians(self.max_turn_angle))
+
+        # 距离为0的点视为平滑
+        is_smooth = (cos_angle >= min_cos) | (new_len == 0)
+
+        return is_smooth
+
+    def compute_linearity_vectorized(self, path, candidate_coords):
+        """向量化计算线性度"""
+        if len(path) < 2 or len(candidate_coords) == 0:
+            return np.ones(len(candidate_coords))
+
+        n = min(5, len(path))
+        recent = path[-n:]
+
         dx_sum, dy_sum = 0, 0
         for i in range(1, len(recent)):
             dx_sum += recent[i][0] - recent[i - 1][0]
             dy_sum += recent[i][1] - recent[i - 1][1]
+
         dir_len = sqrt(dx_sum ** 2 + dy_sum ** 2)
         if dir_len == 0:
-            return 1.0
-        last = path[-1]
-        new_dx = new_point[0] - last[0]
-        new_dy = new_point[1] - last[1]
-        new_len = sqrt(new_dx ** 2 + new_dy ** 2)
-        if new_len == 0:
-            return 1.0
-        cos_angle = (dx_sum * new_dx + dy_sum * new_dy) / (dir_len * new_len)
-        return (cos_angle + 1) / 2
+            return np.ones(len(candidate_coords))
 
-    def find_candidates_leftward(self, frame_idx, cx, cy, path, direction, visited, target=None, radius=None):
-        """向左半圆搜索候选点"""
+        last_x, last_y = path[-1]
+
+        cand_arr = np.array(candidate_coords)
+        new_dx = cand_arr[:, 0] - last_x
+        new_dy = cand_arr[:, 1] - last_y
+        new_len = np.sqrt(new_dx ** 2 + new_dy ** 2)
+
+        new_len = np.where(new_len == 0, 1, new_len)
+
+        cos_angle = (dx_sum * new_dx + dy_sum * new_dy) / (dir_len * new_len)
+        linearity = (cos_angle + 1) / 2
+
+        return linearity
+
+    def find_candidates_leftward_vectorized(self, frame_idx, cx, cy, path, direction, visited, target=None,
+                                            radius=None):
+        """向量化版本的向左候选点搜索（带平滑约束）"""
         if radius is None:
             radius = self.search_radius
-        frame = self.frames[frame_idx]
-        candidates = []
-        search_range = int(radius)
 
-        allow_right = target is not None and target[0] > cx
+        frame = self.frames_np[frame_idx]
+        grid = self._get_search_grid(radius, 'left', self.max_step_distance)
 
-        for dy in range(-search_range, search_range + 1):
-            dx_end = search_range if allow_right else 1
-            for dx in range(-search_range, dx_end):
-                if dx == 0 and dy == 0:
-                    continue
-                dist = sqrt(dx ** 2 + dy ** 2)
-                if dist > radius:
-                    continue
-                nx, ny = cx + dx, cy + dy
-                if (nx, ny) in visited:
-                    continue
-                if nx < 0 or nx >= self.width or ny < 0 or ny >= self.height:
-                    continue
-                brightness = frame[ny, nx]
-                if brightness < self.brightness_threshold:
-                    continue
+        dx = grid['dx']
+        dy = grid['dy']
+        dist = grid['dist']
 
-                linearity = self.compute_linearity(path, (nx, ny))
-                score = brightness * (linearity ** self.linearity_weight) / (dist + 0.5)
+        nx = cx + dx
+        ny = cy + dy
 
-                if dx < 0:
-                    score *= (1 + abs(dx) / (dist + 0.1))
+        valid_bounds = (nx >= 0) & (nx < self.width) & (ny >= 0) & (ny < self.height)
 
-                if direction:
-                    dir_x, dir_y = direction
-                    dir_len = sqrt(dir_x ** 2 + dir_y ** 2)
-                    if dir_len > 0:
-                        cos_a = (dx * dir_x + dy * dir_y) / (dist * dir_len)
-                        score *= (1 + (cos_a + 1) / 2)
+        if not np.any(valid_bounds):
+            return []
 
-                if target:
-                    tx, ty = target
-                    to_target_dx = tx - cx
-                    to_target_dy = ty - cy
-                    to_target_len = sqrt(to_target_dx ** 2 + to_target_dy ** 2)
-                    if to_target_len > 0:
-                        cos_to_target = (dx * to_target_dx + dy * to_target_dy) / (dist * to_target_len)
-                        score *= (1 + 3.0 * (cos_to_target + 1) / 2)
+        nx_valid = nx[valid_bounds].astype(int)
+        ny_valid = ny[valid_bounds].astype(int)
+        brightness = frame[ny_valid, nx_valid]
 
-                candidates.append((nx, ny, score, dx, dy))
+        bright_mask = brightness > self.brightness_threshold
+
+        if not np.any(bright_mask):
+            return []
+
+        nx_bright = nx_valid[bright_mask]
+        ny_bright = ny_valid[bright_mask]
+        brightness_bright = brightness[bright_mask]
+
+        dx_bright = nx_bright - cx
+        dy_bright = ny_bright - cy
+        dist_bright = np.sqrt(dx_bright ** 2 + dy_bright ** 2)
+
+        # 过滤已访问的点
+        not_visited = np.array([
+            (int(nx_bright[i]), int(ny_bright[i])) not in visited
+            for i in range(len(nx_bright))
+        ])
+
+        if not np.any(not_visited):
+            return []
+
+        nx_filter = nx_bright[not_visited]
+        ny_filter = ny_bright[not_visited]
+        brightness_filter = brightness_bright[not_visited]
+        dx_filter = dx_bright[not_visited]
+        dy_filter = dy_bright[not_visited]
+        dist_filter = dist_bright[not_visited]
+
+        # 平滑过渡检查
+        coords = list(zip(nx_filter, ny_filter))
+        is_smooth = self.check_smooth_transition_vectorized(path, coords)
+
+        if not np.any(is_smooth):
+            # 如果没有满足平滑的，放宽条件选最平滑的几个
+            smoothness = self.compute_smoothness_vectorized(path, coords)
+            # 选平滑度最高的50%
+            threshold = np.percentile(smoothness, 50)
+            is_smooth = smoothness >= threshold
+
+        nx_final = nx_filter[is_smooth]
+        ny_final = ny_filter[is_smooth]
+        brightness_final = brightness_filter[is_smooth]
+        dx_final = dx_filter[is_smooth]
+        dy_final = dy_filter[is_smooth]
+        dist_final = dist_filter[is_smooth]
+
+        if len(nx_final) == 0:
+            return []
+
+        # 计算线性度和平滑度
+        coords_final = list(zip(nx_final, ny_final))
+        linearity = self.compute_linearity_vectorized(path, coords_final)
+        smoothness = self.compute_smoothness_vectorized(path, coords_final)
+
+        # 基础得分
+        scores = brightness_final * (linearity ** self.linearity_weight) / (dist_final + 0.5)
+
+        # 平滑度加分
+        scores *= (1 + smoothness)
+
+        # 向左加分
+        left_bonus = np.abs(dx_final) / (dist_final + 0.1)
+        scores *= (1 + left_bonus)
+
+        # 方向一致性加分
+        if direction:
+            dir_x, dir_y = direction
+            dir_len = sqrt(dir_x ** 2 + dir_y ** 2)
+            if dir_len > 0:
+                cos_a = (dx_final * dir_x + dy_final * dir_y) / (dist_final * dir_len)
+                scores *= (1 + (cos_a + 1) / 2)
+
+        # 目标点加分
+        if target:
+            tx, ty = target
+            to_target_dx = tx - cx
+            to_target_dy = ty - cy
+            to_target_len = sqrt(to_target_dx ** 2 + to_target_dy ** 2)
+            if to_target_len > 0:
+                cos_to_target = (dx_final * to_target_dx + dy_final * to_target_dy) / (dist_final * to_target_len)
+                scores *= (1 + 3.0 * (cos_to_target + 1) / 2)
+
+        candidates = [
+            (int(nx_final[i]), int(ny_final[i]), float(scores[i]),
+             int(dx_final[i]), int(dy_final[i]))
+            for i in range(len(nx_final))
+        ]
 
         return candidates
 
-    def find_candidates_rightward(self, frame_idx, cx, cy, path, direction, visited, radius=None):
-        """向右半圆搜索候选点（和向左逻辑相同，方向相反）"""
+    def find_candidates_rightward_vectorized(self, frame_idx, cx, cy, path, direction, visited, radius=None):
+        """向量化版本的向右候选点搜索（带平滑约束和速度限制）"""
         if radius is None:
             radius = self.search_radius
-        frame = self.frames[frame_idx]
-        candidates = []
-        search_range = int(radius)
 
-        for dy in range(-search_range, search_range + 1):
-            # dx >= 0：只搜索右半圆
-            for dx in range(0, search_range + 1):
-                if dx == 0 and dy == 0:
-                    continue
-                dist = sqrt(dx ** 2 + dy ** 2)
-                if dist > radius:
-                    continue
-                nx, ny = cx + dx, cy + dy
-                if (nx, ny) in visited:
-                    continue
-                if nx < 0 or nx >= self.width or ny < 0 or ny >= self.height:
-                    continue
-                brightness = frame[ny, nx]
-                if brightness < self.brightness_threshold:
-                    continue
+        frame = self.frames_np[frame_idx]
 
-                linearity = self.compute_linearity(path, (nx, ny))
-                score = brightness * (linearity ** self.linearity_weight) / (dist + 0.5)
+        # 使用最大步距限制搜索范围
+        effective_radius = min(radius, self.max_step_distance)
+        grid = self._get_search_grid(effective_radius, 'right', self.max_step_distance)
 
-                # 向右加分
-                if dx > 0:
-                    score *= (1 + dx / (dist + 0.1))
+        dx = grid['dx']
+        dy = grid['dy']
+        dist = grid['dist']
 
-                if direction:
-                    dir_x, dir_y = direction
-                    dir_len = sqrt(dir_x ** 2 + dir_y ** 2)
-                    if dir_len > 0:
-                        cos_a = (dx * dir_x + dy * dir_y) / (dist * dir_len)
-                        score *= (1 + (cos_a + 1) / 2)
+        nx = cx + dx
+        ny = cy + dy
 
-                candidates.append((nx, ny, score, dx, dy))
+        valid_bounds = (nx >= 0) & (nx < self.width) & (ny >= 0) & (ny < self.height)
+
+        if not np.any(valid_bounds):
+            return []
+
+        nx_valid = nx[valid_bounds].astype(int)
+        ny_valid = ny[valid_bounds].astype(int)
+        dist_valid = dist[valid_bounds]
+        brightness = frame[ny_valid, nx_valid]
+
+        # 亮度过滤
+        bright_mask = brightness > self.brightness_threshold
+
+        if not np.any(bright_mask):
+            return []
+
+        nx_bright = nx_valid[bright_mask]
+        ny_bright = ny_valid[bright_mask]
+        brightness_bright = brightness[bright_mask]
+        dist_bright = dist_valid[bright_mask]
+
+        dx_bright = nx_bright - cx
+        dy_bright = ny_bright - cy
+
+        # 移动速度限制：过滤超过最大步距的点
+        speed_mask = dist_bright <= self.max_step_distance
+
+        if not np.any(speed_mask):
+            return []
+
+        nx_speed = nx_bright[speed_mask]
+        ny_speed = ny_bright[speed_mask]
+        brightness_speed = brightness_bright[speed_mask]
+        dx_speed = dx_bright[speed_mask]
+        dy_speed = dy_bright[speed_mask]
+        dist_speed = dist_bright[speed_mask]
+
+        # 过滤已访问的点
+        not_visited = np.array([
+            (int(nx_speed[i]), int(ny_speed[i])) not in visited
+            for i in range(len(nx_speed))
+        ])
+
+        if not np.any(not_visited):
+            return []
+
+        nx_filter = nx_speed[not_visited]
+        ny_filter = ny_speed[not_visited]
+        brightness_filter = brightness_speed[not_visited]
+        dx_filter = dx_speed[not_visited]
+        dy_filter = dy_speed[not_visited]
+        dist_filter = dist_speed[not_visited]
+
+        # 平滑过渡检查
+        coords = list(zip(nx_filter, ny_filter))
+        is_smooth = self.check_smooth_transition_vectorized(path, coords)
+
+        if not np.any(is_smooth):
+            # 没有满足平滑的点，选最平滑的几个
+            smoothness = self.compute_smoothness_vectorized(path, coords)
+            if len(smoothness) > 0:
+                threshold = np.percentile(smoothness, 50)
+                is_smooth = smoothness >= threshold
+            else:
+                return []
+
+        nx_final = nx_filter[is_smooth]
+        ny_final = ny_filter[is_smooth]
+        brightness_final = brightness_filter[is_smooth]
+        dx_final = dx_filter[is_smooth]
+        dy_final = dy_filter[is_smooth]
+        dist_final = dist_filter[is_smooth]
+
+        if len(nx_final) == 0:
+            return []
+
+        # 计算线性度和平滑度
+        coords_final = list(zip(nx_final, ny_final))
+        linearity = self.compute_linearity_vectorized(path, coords_final)
+        smoothness = self.compute_smoothness_vectorized(path, coords_final)
+
+        # 基础得分
+        scores = brightness_final * (linearity ** self.linearity_weight) / (dist_final + 0.5)
+
+        # 平滑度加分（权重更高，因为向右生长需要更平滑）
+        scores *= (1 + 2.0 * smoothness)
+
+        # 向右加分
+        right_bonus = np.maximum(0, dx_final) / (dist_final + 0.1)
+        scores *= (1 + right_bonus)
+
+        # 方向一致性加分
+        if direction:
+            dir_x, dir_y = direction
+            dir_len = sqrt(dir_x ** 2 + dir_y ** 2)
+            if dir_len > 0:
+                cos_a = (dx_final * dir_x + dy_final * dir_y) / (dist_final * dir_len)
+                scores *= (1 + (cos_a + 1) / 2)
+
+        # 距离适中奖励（不要太近也不要太远）
+        optimal_dist = self.max_step_distance * 0.5
+        dist_penalty = np.abs(dist_final - optimal_dist) / optimal_dist
+        scores *= (1 - 0.3 * dist_penalty)
+
+        candidates = [
+            (int(nx_final[i]), int(ny_final[i]), float(scores[i]),
+             int(dx_final[i]), int(dy_final[i]))
+            for i in range(len(nx_final))
+        ]
 
         return candidates
 
     def trace_segment_left(self, frame_idx, start_x, start_y, target=None, initial_direction=None, max_steps=3000):
-        """向左追踪"""
+        """向左追踪（带平滑约束）"""
         path = [(int(start_x), int(start_y))]
         visited = set()
         visited.add((int(start_x), int(start_y)))
@@ -271,14 +602,13 @@ class NeuronTracker:
                 boundary_reached = boundary_type
                 break
 
-            candidates = self.find_candidates_leftward(
+            candidates = self.find_candidates_leftward_vectorized(
                 frame_idx, cx, cy, path, direction, visited, target=target
             )
 
-            # 遇空缺：扩大搜索半径
             if not candidates:
                 for radius in range(self.search_radius, self.max_search_radius + 1, self.search_radius_step):
-                    candidates = self.find_candidates_leftward(
+                    candidates = self.find_candidates_leftward_vectorized(
                         frame_idx, cx, cy, path, direction, visited, target=target, radius=radius
                     )
                     if candidates:
@@ -332,30 +662,26 @@ class NeuronTracker:
         return path, boundary_reached, reached_target, direction
 
     def grow_rightward(self, frame_idx, prev_path, prev_direction, max_steps=300):
-        """
-        从上一帧的末端继续向右生长
-        prev_path: 上一帧的完整轨迹
-        返回: 新增的点（不包括起点）
-        """
+        """向右生长（带平滑约束和速度限制）"""
         if not prev_path:
-            return [], None
+            return [], None, None
 
-        # 从上一帧末端（最右端）开始
         start_x, start_y = prev_path[-1]
 
-        # 检查是否已到右边界
         reached, boundary_type = self.check_right_boundary(start_x, start_y)
         if reached:
-            return [], boundary_type
+            return [], boundary_type, prev_direction
 
         new_points = []
-        visited = set(prev_path)  # 避免重复之前路径的点
+        visited = set(prev_path)
         cx, cy = start_x, start_y
         direction = prev_direction if prev_direction else (1, 0)
         boundary_reached = None
 
-        # 构建用于计算linearity的路径（包含之前轨迹的末端部分）
-        context_path = list(prev_path[-10:])  # 最多取最后10个点作为上下文
+        context_path = list(prev_path[-10:])
+
+        consecutive_failures = 0
+        max_consecutive_failures = 5
 
         for step in range(max_steps):
             reached, boundary_type = self.check_right_boundary(cx, cy)
@@ -363,21 +689,27 @@ class NeuronTracker:
                 boundary_reached = boundary_type
                 break
 
-            candidates = self.find_candidates_rightward(
+            # 使用向量化搜索（带平滑约束）
+            candidates = self.find_candidates_rightward_vectorized(
                 frame_idx, cx, cy, context_path + new_points, direction, visited
             )
 
-            # 遇空缺：扩大搜索半径（同向左逻辑）
             if not candidates:
+                # 扩大搜索半径
                 for radius in range(self.search_radius, self.max_search_radius + 1, self.search_radius_step):
-                    candidates = self.find_candidates_rightward(
+                    candidates = self.find_candidates_rightward_vectorized(
                         frame_idx, cx, cy, context_path + new_points, direction, visited, radius=radius
                     )
                     if candidates:
                         break
 
             if not candidates:
-                break
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    break
+                continue
+
+            consecutive_failures = 0
 
             candidates.sort(key=lambda x: -x[2])
             chosen = candidates[0]
@@ -392,7 +724,10 @@ class NeuronTracker:
                     nx, ny = chosen[0], chosen[1]
                     dx, dy = chosen[3], chosen[4]
                 else:
-                    break
+                    consecutive_failures += 1
+                    if consecutive_failures >= max_consecutive_failures:
+                        break
+                    continue
 
             if (nx, ny) in visited:
                 remaining = [c for c in candidates if (c[0], c[1]) not in visited and c[3] >= 0]
@@ -401,7 +736,10 @@ class NeuronTracker:
                     nx, ny = chosen[0], chosen[1]
                     dx, dy = chosen[3], chosen[4]
                 else:
-                    break
+                    consecutive_failures += 1
+                    if consecutive_failures >= max_consecutive_failures:
+                        break
+                    continue
 
             new_points.append((nx, ny))
             visited.add((nx, ny))
@@ -442,9 +780,10 @@ class NeuronTracker:
 
             best_pt = None
             best_score = -1
-            frame = self.frames[frame_idx]
+            frame = self.frames_np[frame_idx]
 
-            for step_len in [1, 2]:
+            # 限制步长
+            for step_len in [1, 2, min(3, self.max_step_distance)]:
                 for angle_offset in [0, 0.15, -0.15, 0.3, -0.3]:
                     ndx = dx * cos(angle_offset) - dy * sin(angle_offset)
                     ndy = dx * sin(angle_offset) + dy * cos(angle_offset)
@@ -473,7 +812,6 @@ class NeuronTracker:
         return path
 
     def trace_left_unified(self, frame_idx, waypoints):
-        """向左追踪经过所有必经点"""
         if not waypoints:
             return [], None
 
@@ -556,15 +894,13 @@ class NeuronTracker:
         best_score = 0
 
         for f in marked_frames:
-            frame = self.frames[f]
+            frame = self.frames_np[f]
             score = 0
             for wp in waypoints:
                 x, y = wp
-                for dy in range(-5, 6):
-                    for dx in range(-5, 6):
-                        nx, ny = x + dx, y + dy
-                        if 0 <= nx < self.width and 0 <= ny < self.height:
-                            score += frame[ny, nx]
+                y1, y2 = max(0, y - 5), min(self.height, y + 6)
+                x1, x2 = max(0, x - 5), min(self.width, x + 6)
+                score += np.sum(frame[y1:y2, x1:x2])
             if score > best_score:
                 best_score = score
                 best_frame = f
@@ -572,11 +908,9 @@ class NeuronTracker:
         return best_frame
 
     def compute_neuron_trajectory(self, neuron_id):
-        """
-        计算神经元轨迹：
-        1. 在第一个标记帧：向左追踪到边界
-        2. 从第一个标记帧开始：每帧在上一帧基础上向右累积生长
-        """
+        """计算神经元轨迹"""
+        start_time = time.time()
+
         markers = self.get_neuron_markers(neuron_id)
         if not markers:
             return None
@@ -585,23 +919,27 @@ class NeuronTracker:
         if not all_waypoints:
             return None
 
-        # 按x从大到小排序（从右到左）
         all_waypoints = sorted(all_waypoints, key=lambda p: -p[0])
 
         marked_frames = sorted(markers.keys())
         first_marked_frame = min(marked_frames)
 
         print(f"\n{'=' * 60}")
-        print(f"计算神经元 N{neuron_id} 轨迹")
+        print(f"计算神经元 N{neuron_id} 轨迹 (平滑约束版)")
         print(f"标记帧: {marked_frames}, 首帧: {first_marked_frame}")
         print(f"必经点({len(all_waypoints)}个): {all_waypoints}")
+        print(f"最大转角: {self.max_turn_angle}°, 最大步距: {self.max_step_distance}")
         print(f"{'=' * 60}")
 
-        # ========== 第一个标记帧：向左追踪到边界 ==========
+        # 向左追踪
+        t1 = time.time()
         best_frame = self.find_best_frame(neuron_id, all_waypoints)
         print(f"\n[初始帧{best_frame}] 向左追踪")
 
         initial_path, left_boundary = self.trace_left_unified(best_frame, all_waypoints)
+
+        t2 = time.time()
+        print(f"  向左追踪耗时: {t2 - t1:.3f}秒")
 
         if not initial_path:
             print("  追踪失败！")
@@ -610,14 +948,11 @@ class NeuronTracker:
         if len(initial_path) > 5:
             initial_path = self.smooth_path_preserve_waypoints(initial_path, all_waypoints)
 
-        # 确保路径方向：从左到右（因为后续向右生长）
         if len(initial_path) >= 2 and initial_path[0][0] > initial_path[-1][0]:
             initial_path = initial_path[::-1]
 
         print(f"  初始路径: {len(initial_path)}点, 左端到达{left_boundary or '边界'}")
-        print(f"  路径范围: x={initial_path[0][0]} ~ {initial_path[-1][0]}")
 
-        # 初始方向（从末端推断）
         if len(initial_path) >= 2:
             dx = initial_path[-1][0] - initial_path[-2][0]
             dy = initial_path[-1][1] - initial_path[-2][1]
@@ -626,41 +961,36 @@ class NeuronTracker:
         else:
             current_direction = (1, 0)
 
-        # ========== 逐帧累积生长 ==========
+        # 逐帧生长
+        t3 = time.time()
         paths_by_frame = {}
 
-        # 第一个标记帧之前：都用初始路径
         for frame_idx in range(first_marked_frame):
             paths_by_frame[frame_idx] = initial_path.copy()
 
-        # 当前累积路径（从初始路径开始）
         current_path = initial_path.copy()
 
-        print(f"\n[向右生长] 从帧{first_marked_frame}开始")
+        print(f"\n[向右生长] 从帧{first_marked_frame}开始 (平滑约束)")
 
+        growth_count = 0
         for frame_idx in range(first_marked_frame, len(self.frames)):
-            # 在当前帧，基于上一帧的路径向右生长
             new_points, right_boundary, new_direction = self.grow_rightward(
                 frame_idx, current_path, current_direction
             )
 
-            # 累积：新路径 = 上一帧路径 + 新增点
             if new_points:
                 current_path = current_path + new_points
                 current_direction = new_direction
+                growth_count += len(new_points)
 
-            # 存储当前帧的路径
             paths_by_frame[frame_idx] = current_path.copy()
-
-            if frame_idx <= first_marked_frame + 5 or frame_idx % 20 == 0 or new_points:
-                tip_x = current_path[-1][0]
-                added = len(new_points)
-                print(f"  帧{frame_idx}: 末端x={tip_x}, 新增{added}点, 总{len(current_path)}点")
 
             if right_boundary:
                 print(f"  帧{frame_idx}: 到达右边界 {right_boundary}")
 
-        # ========== 生成结果 ==========
+        t4 = time.time()
+        print(f"  向右生长耗时: {t4 - t3:.3f}秒, 共生长{growth_count}点")
+
         max_path = paths_by_frame[len(self.frames) - 1]
 
         result = {
@@ -674,10 +1004,11 @@ class NeuronTracker:
 
         self.tracking_results[neuron_id] = result
 
+        total_time = time.time() - start_time
         print(f"\n完成 N{neuron_id}:")
+        print(f"  总耗时: {total_time:.3f}秒")
         print(f"  初始路径: {len(initial_path)}点")
         print(f"  最终路径: {len(max_path)}点")
-        print(f"  范围: x={max_path[0][0]} ~ {max_path[-1][0]}")
 
         return result
 
@@ -687,7 +1018,7 @@ class TrackerGUI:
 
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("神经元追踪 - 向左统一 + 向右累积生长")
+        self.root.title("神经元追踪 - 平滑约束优化版")
         self.root.geometry("1550x980")
 
         self.tracker = NeuronTracker()
@@ -722,10 +1053,10 @@ class TrackerGUI:
         self.canvas = tk.Canvas(left, bg='black')
         self.canvas.grid(row=0, column=0, sticky="nsew")
 
-        right = ttk.Frame(self.main_paned, width=400)
+        right = ttk.Frame(self.main_paned, width=420)
         self.main_paned.add(right, weight=0)
 
-        self.ctrl_canvas = tk.Canvas(right, width=380)
+        self.ctrl_canvas = tk.Canvas(right, width=400)
         scrollbar = ttk.Scrollbar(right, orient="vertical", command=self.ctrl_canvas.yview)
         self.ctrl_frame = ttk.Frame(self.ctrl_canvas)
         self.ctrl_canvas.configure(yscrollcommand=scrollbar.set)
@@ -750,12 +1081,12 @@ class TrackerGUI:
         f1 = ttk.LabelFrame(p, text="📁 文件", padding=5)
         f1.pack(fill="x", pady=pad, padx=3)
         ttk.Label(f1, text="输入:").grid(row=0, column=0, sticky="w")
-        self.input_entry = ttk.Entry(f1, width=26)
+        self.input_entry = ttk.Entry(f1, width=28)
         self.input_entry.insert(0, self.input_dir)
         self.input_entry.grid(row=0, column=1, sticky="ew")
         ttk.Button(f1, text="...", command=self.browse_input, width=3).grid(row=0, column=2)
         ttk.Label(f1, text="输出:").grid(row=1, column=0, sticky="w", pady=2)
-        self.output_entry = ttk.Entry(f1, width=26)
+        self.output_entry = ttk.Entry(f1, width=28)
         self.output_entry.insert(0, self.output_dir)
         self.output_entry.grid(row=1, column=1, sticky="ew")
         ttk.Button(f1, text="...", command=self.browse_output, width=3).grid(row=1, column=2)
@@ -811,14 +1142,6 @@ class TrackerGUI:
         self.neuron_color_label.pack(side="left", padx=5)
         self.update_neuron_color_display()
 
-        ttk.Label(f4, text="数字键1-9快速切换").pack(anchor="w")
-
-        # 追踪模式说明
-        f_mode = ttk.LabelFrame(p, text="📐 追踪模式", padding=5)
-        f_mode.pack(fill="x", pady=pad, padx=3)
-        ttk.Label(f_mode, text="首帧: 向左追踪到边界\n后续: 每帧 = 上一帧 + 向右新增\n\n轨迹只增不减，只能向右延伸",
-                  font=("", 9), justify="left", foreground="darkblue").pack(anchor="w")
-
         # 标记操作
         f5 = ttk.LabelFrame(p, text="📍 标记必经点", padding=5)
         f5.pack(fill="x", pady=pad, padx=3)
@@ -827,7 +1150,7 @@ class TrackerGUI:
                   font=("", 9), justify="left").pack(anchor="w")
 
         self.marker_info = tk.StringVar(value="当前神经元无标记")
-        ttk.Label(f5, textvariable=self.marker_info, foreground="blue", wraplength=340).pack(anchor="w", pady=3)
+        ttk.Label(f5, textvariable=self.marker_info, foreground="blue", wraplength=360).pack(anchor="w", pady=3)
 
         btn_row = ttk.Frame(f5)
         btn_row.pack(fill="x", pady=3)
@@ -846,7 +1169,7 @@ class TrackerGUI:
         ttk.Button(btn_row2, text="▶▶ 计算全部", command=self.compute_all_neurons, width=12).pack(side="left", padx=2)
 
         self.compute_info = tk.StringVar(value="")
-        ttk.Label(f6, textvariable=self.compute_info, foreground="green", wraplength=340).pack(anchor="w", pady=3)
+        ttk.Label(f6, textvariable=self.compute_info, foreground="green", wraplength=360).pack(anchor="w", pady=3)
 
         btn_row3 = ttk.Frame(f6)
         btn_row3.pack(fill="x", pady=3)
@@ -866,12 +1189,21 @@ class TrackerGUI:
         self.radius_var = tk.StringVar(value="30")
         ttk.Entry(g, textvariable=self.radius_var, width=5).grid(row=0, column=3)
 
-        ttk.Label(g, text="最大搜索:").grid(row=1, column=0, sticky="w", pady=2)
-        self.max_radius_var = tk.StringVar(value="150")
-        ttk.Entry(g, textvariable=self.max_radius_var, width=5).grid(row=1, column=1)
-        ttk.Label(g, text="(遇空缺时)").grid(row=1, column=2, columnspan=2, sticky="w", padx=(5, 0))
+        ttk.Label(g, text="最大转角:").grid(row=1, column=0, sticky="w", pady=2)
+        self.angle_var = tk.StringVar(value="60")
+        ttk.Entry(g, textvariable=self.angle_var, width=5).grid(row=1, column=1)
+        ttk.Label(g, text="°").grid(row=1, column=1, sticky="e")
+        ttk.Label(g, text="最大步距:").grid(row=1, column=2, sticky="w", padx=(8, 0))
+        self.step_var = tk.StringVar(value="15")
+        ttk.Entry(g, textvariable=self.step_var, width=5).grid(row=1, column=3)
 
         ttk.Button(f7, text="应用参数", command=self.apply_params).pack(pady=3)
+
+        # 平滑约束说明
+        f_smooth = ttk.LabelFrame(p, text="🔄 平滑约束", padding=5)
+        f_smooth.pack(fill="x", pady=pad, padx=3)
+        ttk.Label(f_smooth, text="✓ 转角限制: 避免大角度转向\n✓ 步距限制: 避免闪现跳跃\n✓ 方向连续: 优先沿当前方向",
+                  font=("", 9), justify="left", foreground="darkgreen").pack(anchor="w")
 
         # 结果列表
         f8 = ttk.LabelFrame(p, text="📊 追踪结果", padding=5)
@@ -899,7 +1231,7 @@ class TrackerGUI:
         f10 = ttk.LabelFrame(p, text="📌 状态", padding=5)
         f10.pack(fill="x", pady=pad, padx=3)
         self.status = tk.StringVar(value="请加载帧")
-        ttk.Label(f10, textvariable=self.status, wraplength=340, foreground="blue").pack(fill="x")
+        ttk.Label(f10, textvariable=self.status, wraplength=360, foreground="blue").pack(fill="x")
         self.progress = ttk.Progressbar(f10, mode='determinate')
         self.progress.pack(fill="x", pady=3)
 
@@ -950,10 +1282,7 @@ class TrackerGUI:
             self.marker_info.set(f"N{self.current_neuron_id}: 无标记")
         else:
             frames = sorted(markers.keys())
-            self.marker_info.set(
-                f"N{self.current_neuron_id}: {len(waypoints)}个必经点\n"
-                f"标记帧: {frames}"
-            )
+            self.marker_info.set(f"N{self.current_neuron_id}: {len(waypoints)}个必经点 @ 帧{frames}")
 
     def browse_input(self):
         p = filedialog.askdirectory()
@@ -975,14 +1304,17 @@ class TrackerGUI:
         self.status.set("加载中...")
         self.progress['value'] = 0
         self.root.update()
+
+        start_time = time.time()
         if self.tracker.load_frames(self.input_dir,
                                     lambda p: (setattr(self.progress, 'value', p * 100), self.root.update())):
             n = len(self.tracker.frames)
+            load_time = time.time() - start_time
             self.frame_slider.configure(to=n - 1)
             self.frame_label.configure(text=f"/ {n - 1}")
             self.current_frame_idx = 0
             self.root.after(100, self.fit_zoom)
-            self.status.set(f"已加载 {n} 帧")
+            self.status.set(f"已加载 {n} 帧 ({load_time:.2f}秒)")
         else:
             messagebox.showerror("错误", "未找到PNG")
         self.progress['value'] = 0
@@ -1056,8 +1388,7 @@ class TrackerGUI:
         self.update_marker_info()
 
         total = len(self.tracker.get_all_waypoints(self.current_neuron_id))
-        self.status.set(
-            f"N{self.current_neuron_id}: 添加必经点 ({ix}, {iy}) @ 帧{self.current_frame_idx} [共{total}点]")
+        self.status.set(f"N{self.current_neuron_id}: 添加 ({ix}, {iy}) @ 帧{self.current_frame_idx} [共{total}点]")
         self.update_display()
 
     def on_right_click(self, e):
@@ -1084,7 +1415,10 @@ class TrackerGUI:
         try:
             self.tracker.brightness_threshold = int(self.thresh_var.get())
             self.tracker.search_radius = int(self.radius_var.get())
-            self.tracker.max_search_radius = int(self.max_radius_var.get())
+            self.tracker.max_turn_angle = int(self.angle_var.get())
+            self.tracker.max_step_distance = int(self.step_var.get())
+            self.tracker._search_grids.clear()
+            self.status.set(f"参数已更新: 转角≤{self.tracker.max_turn_angle}°, 步距≤{self.tracker.max_step_distance}")
         except:
             pass
 
@@ -1098,7 +1432,9 @@ class TrackerGUI:
         self.status.set(f"计算 N{self.current_neuron_id} 轨迹...")
         self.root.update()
 
+        start_time = time.time()
         result = self.tracker.compute_neuron_trajectory(self.current_neuron_id)
+        elapsed = time.time() - start_time
 
         if result:
             self.preview_result = result
@@ -1106,15 +1442,13 @@ class TrackerGUI:
 
             init_len = len(result['initial_path'])
             final_tip = result['final_tip_x']
-            first_frame = result['first_marked_frame']
 
             self.compute_info.set(
-                f"N{self.current_neuron_id}:\n"
-                f"初始: {init_len}点 → {result['left_boundary'] or '边界'}\n"
-                f"生长: 从帧{first_frame}, 最远x={final_tip}\n"
+                f"N{self.current_neuron_id}: 耗时{elapsed:.2f}秒\n"
+                f"初始: {init_len}点, 末端x={final_tip}\n"
                 f"Enter确认 / Esc取消"
             )
-            self.status.set("预览就绪")
+            self.status.set(f"预览就绪 (耗时{elapsed:.2f}秒)")
         else:
             self.compute_info.set("计算失败")
             self.status.set("未找到有效轨迹")
@@ -1129,16 +1463,19 @@ class TrackerGUI:
 
         self.apply_params()
         success = 0
+        total_time = 0
 
         for nid in neuron_ids:
             self.status.set(f"计算 N{nid} ...")
             self.root.update()
+            start = time.time()
             result = self.tracker.compute_neuron_trajectory(nid)
+            total_time += time.time() - start
             if result:
                 success += 1
 
         self.update_result_list()
-        self.status.set(f"完成: {success}/{len(neuron_ids)} 个神经元")
+        self.status.set(f"完成: {success}/{len(neuron_ids)} 个神经元, 总耗时{total_time:.2f}秒")
         self.update_display()
 
     def confirm_result(self):
@@ -1165,8 +1502,7 @@ class TrackerGUI:
         for nid, result in sorted(self.tracker.tracking_results.items()):
             init_len = len(result.get('initial_path', []))
             final_tip = result.get('final_tip_x', 0)
-            lb = result.get('left_boundary', '')
-            self.result_list.insert(tk.END, f"N{nid}: 初{init_len}点→{lb}, 末x={final_tip}")
+            self.result_list.insert(tk.END, f"N{nid}: {init_len}点, 末x={final_tip}")
 
     def on_result_select(self, e):
         sel = self.result_list.curselection()
@@ -1199,7 +1535,7 @@ class TrackerGUI:
         self.output_dir = self.output_entry.get()
         os.makedirs(self.output_dir, exist_ok=True)
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        path = os.path.join(self.output_dir, "neuron_growth_tracking.mp4")
+        path = os.path.join(self.output_dir, "neuron_tracking_smooth.mp4")
         out = cv2.VideoWriter(path, fourcc, 10, (self.tracker.width, self.tracker.height), True)
         for i in range(len(self.tracker.frames)):
             out.write(self.render(i, True))
@@ -1224,7 +1560,7 @@ class TrackerGUI:
             return
         self.output_dir = self.output_entry.get()
         os.makedirs(self.output_dir, exist_ok=True)
-        path = os.path.join(self.output_dir, "neuron_growth_paths.csv")
+        path = os.path.join(self.output_dir, "neuron_paths.csv")
 
         with open(path, 'w') as f:
             f.write("neuron_id,frame,path_index,x,y\n")
@@ -1238,7 +1574,7 @@ class TrackerGUI:
         messagebox.showinfo("完成", f"导出完成!\n{path}")
 
     def render(self, idx, for_export=False):
-        frame = self.tracker.frames[idx]
+        frame = self.tracker.frames_np[idx]
         vis = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
 
         # 边界线
@@ -1251,7 +1587,7 @@ class TrackerGUI:
         cv2.line(vis, (0, self.tracker.height - self.tracker.edge_margin),
                  (self.tracker.width, self.tracker.height - self.tracker.edge_margin), (0, 100, 0), 1)
 
-        # 渲染结果或预览
+        # 渲染结果
         results_to_render = []
 
         for nid, result in self.tracker.tracking_results.items():
@@ -1271,33 +1607,26 @@ class TrackerGUI:
 
             if idx in paths_by_frame:
                 frame_path = paths_by_frame[idx]
-
-                # 区分初始部分和生长部分
                 init_len = len(initial_path)
 
-                # 绘制初始部分（统一部分）
                 for j in range(1, min(len(frame_path), init_len)):
                     cv2.line(vis, frame_path[j - 1], frame_path[j], color, 2)
 
-                # 绘制生长部分（较亮颜色）
                 if len(frame_path) > init_len:
                     lighter_color = tuple(min(255, c + 60) for c in color)
                     for j in range(init_len, len(frame_path)):
                         cv2.line(vis, frame_path[j - 1], frame_path[j], lighter_color, 2)
 
-                # 端点
                 if frame_path:
-                    cv2.circle(vis, frame_path[0], 5, (0, 255, 0), -1)  # 左端
-                    cv2.circle(vis, frame_path[-1], 6, (0, 165, 255), -1)  # 右端（生长末端）
+                    cv2.circle(vis, frame_path[0], 5, (0, 255, 0), -1)
+                    cv2.circle(vis, frame_path[-1], 6, (0, 165, 255), -1)
                     cv2.putText(vis, f"N{nid}", (frame_path[-1][0] + 5, frame_path[-1][1] - 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
 
-            # 必经点
             if not for_export:
                 for wp in waypoints:
                     cv2.drawMarker(vis, wp, (255, 255, 255), cv2.MARKER_DIAMOND, 10, 2)
 
-        # 标记点（未计算的）
         if not for_export:
             for nid, frame_markers in self.tracker.markers.items():
                 color = self.get_neuron_color(nid)
@@ -1354,5 +1683,5 @@ class TrackerGUI:
 
 
 if __name__ == "__main__":
-    print("启动神经元追踪 - 向左统一 + 向右累积生长")
+    print("启动神经元追踪 - 平滑约束优化版")
     TrackerGUI().run()
