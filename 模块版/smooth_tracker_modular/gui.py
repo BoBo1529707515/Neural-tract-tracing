@@ -41,25 +41,25 @@ class TrackerGUI:
 
     def setup_styles(self):
         style = ttk.Style()
-        style.theme_use('clam')  # 'clam' is usually a good base for custom dark themes
+        style.theme_use('clam')  # 'clam' is usually a good base for custom themes
 
         # Colors
-        bg_color = '#2b2b2b'
-        fg_color = '#cccccc'
-        panel_bg = '#313335'
-        accent_color = '#365880'
-        accent_hover = '#406a9a'
-        button_bg = '#3c3f41'
-        button_fg = '#bbbbbb'
-        entry_bg = '#2b2b2b'
-        entry_fg = '#cccccc'
-        select_bg = '#2f65ca'
+        bg_color = '#E9F1FA'
+        fg_color = '#333333'
+        panel_bg = '#FFFFFF'
+        accent_color = '#00ABE4'
+        accent_hover = '#0095c8'
+        button_bg = '#FFFFFF'
+        button_fg = '#333333'
+        entry_bg = '#FFFFFF'
+        entry_fg = '#333333'
+        select_bg = '#00ABE4'
 
         # Configure root
         self.root.configure(bg=bg_color)
         
         # General styles
-        style.configure('.', background=bg_color, foreground=fg_color, fieldbackground=entry_bg)
+        style.configure('.', background=bg_color, foreground=fg_color, fieldbackground=entry_bg, font=('Segoe UI', 10))
         style.configure('TFrame', background=bg_color)
         style.configure('TLabel', background=bg_color, foreground=fg_color)
         
@@ -67,48 +67,54 @@ class TrackerGUI:
         style.configure('TButton', 
                         background=button_bg, 
                         foreground=button_fg, 
-                        borderwidth=1, 
+                        borderwidth=0, 
                         focuscolor=select_bg,
-                        padding=(5, 2))
+                        relief='flat',
+                        padding=(8, 4))
         style.map('TButton', 
-                  background=[('active', '#45494a'), ('pressed', '#4b6eaf')],
-                  foreground=[('active', 'white')])
+                  background=[('active', '#E0E8F0'), ('pressed', '#D0D8E0')],
+                  foreground=[('active', '#00ABE4')])
         
         # Accent Button
         style.configure('Accent.TButton', 
                         background=accent_color, 
                         foreground='white',
-                        borderwidth=0)
+                        borderwidth=0,
+                        relief='flat',
+                        padding=(8, 4))
         style.map('Accent.TButton', 
-                  background=[('active', accent_hover), ('pressed', '#2f557a')])
+                  background=[('active', accent_hover), ('pressed', '#007ea3')])
 
         # LabelFrame
         style.configure('TLabelframe', 
                         background=bg_color, 
                         foreground=fg_color, 
-                        bordercolor='#555555')
+                        bordercolor='#D0D8E0',
+                        borderwidth=1,
+                        relief='solid')
         style.configure('TLabelframe.Label', 
                         background=bg_color, 
-                        foreground='#a9b7c6',
-                        font=('Segoe UI', 9, 'bold'))
+                        foreground='#00ABE4',
+                        font=('Segoe UI', 10, 'bold'))
 
         # Entry
         style.configure('TEntry', 
                         fieldbackground=entry_bg, 
                         foreground=entry_fg,
-                        insertcolor='white',
+                        insertcolor='black',
                         borderwidth=1,
-                        relief='flat')
+                        relief='solid',
+                        bordercolor='#D0D8E0')
         
         # PanedWindow
         style.configure('TPanedwindow', background=bg_color)
         
         # Scale
-        style.configure('Horizontal.TScale', background=bg_color, troughcolor='#404040', sliderthickness=15)
-        style.configure('Vertical.TScale', background=bg_color, troughcolor='#404040', sliderthickness=15)
+        style.configure('Horizontal.TScale', background=bg_color, troughcolor='#D0D8E0', sliderthickness=15)
+        style.configure('Vertical.TScale', background=bg_color, troughcolor='#D0D8E0', sliderthickness=15)
 
         # Progressbar
-        style.configure('Horizontal.TProgressbar', background=accent_color, troughcolor='#404040', borderwidth=0)
+        style.configure('Horizontal.TProgressbar', background=accent_color, troughcolor='#D0D8E0', borderwidth=0)
 
         # Custom configurations for non-ttk widgets
         self.root.option_add('*Listbox.Background', entry_bg)
@@ -116,12 +122,13 @@ class TrackerGUI:
         self.root.option_add('*Listbox.selectBackground', select_bg)
         self.root.option_add('*Listbox.selectForeground', 'white')
         self.root.option_add('*Listbox.relief', 'flat')
+        self.root.option_add('*Listbox.font', ('Segoe UI', 10))
         
         # Scrollbar
         style.configure("Vertical.TScrollbar",
-            background=button_bg,
+            background='#D0D8E0',
             troughcolor=bg_color,
-            arrowcolor=fg_color,
+            arrowcolor='#333333',
             relief="flat",
             borderwidth=0
         )
@@ -149,7 +156,8 @@ class TrackerGUI:
         right = ttk.Frame(self.main_paned, width=420)
         self.main_paned.add(right, weight=0)
 
-        self.ctrl_canvas = tk.Canvas(right, width=400, bg='#313335', highlightthickness=0)
+        self.ctrl_canvas = tk.Canvas(right, width=400, bg='#E9F1FA', highlightthickness=0)
+
         scrollbar = ttk.Scrollbar(right, orient="vertical", command=self.ctrl_canvas.yview)
         self.ctrl_frame = ttk.Frame(self.ctrl_canvas)
         self.ctrl_canvas.configure(yscrollcommand=scrollbar.set)
