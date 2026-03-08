@@ -39,6 +39,11 @@ class TrackerGUI:
         self.fps_var = tk.StringVar(value="10")
         self.pixel_um_var = tk.StringVar(value="1.0")
 
+        # ── 撤销栈 ────────────────────────────────────────────────────────
+        # 每条记录: {'action': 'add'|'remove', 'neuron_id': int,
+        #            'frame_idx': int, 'point': (x, y)}
+        self.marker_undo_stack = []
+
         self.setup_styles()
         self.setup_ui()
         self.bind_events()
@@ -49,7 +54,6 @@ class TrackerGUI:
 
         bg_color = '#F5F7FA'
         fg_color = '#2D3436'
-        panel_bg = '#FFFFFF'
         accent_color = '#74B9FF'
         keyword_color = '#2C3E50'
         accent_hover = '#0984E3'
@@ -62,57 +66,45 @@ class TrackerGUI:
 
         self.root.configure(bg=bg_color)
 
-        style.configure('.', background=bg_color, foreground=fg_color, fieldbackground=entry_bg,
-                        font=('Segoe UI', 10))
+        style.configure('.', background=bg_color, foreground=fg_color,
+                        fieldbackground=entry_bg, font=('Segoe UI', 10))
         style.configure('TFrame', background=bg_color)
         style.configure('TLabel', background=bg_color, foreground=fg_color)
 
         style.configure('TButton',
-                        background=button_bg,
-                        foreground=button_fg,
-                        borderwidth=1,
-                        bordercolor=border_color,
-                        focuscolor=select_bg,
-                        relief='flat',
-                        padding=(10, 6))
+                        background=button_bg, foreground=button_fg,
+                        borderwidth=1, bordercolor=border_color,
+                        focuscolor=select_bg, relief='flat', padding=(10, 6))
         style.map('TButton',
                   background=[('active', '#F0F3F5'), ('pressed', '#E2E6EA')],
                   foreground=[('active', accent_hover)],
                   bordercolor=[('active', accent_color)])
 
         style.configure('Accent.TButton',
-                        background=accent_color,
-                        foreground='white',
-                        borderwidth=0,
-                        relief='flat',
-                        padding=(10, 6))
+                        background=accent_color, foreground='white',
+                        borderwidth=0, relief='flat', padding=(10, 6))
         style.map('Accent.TButton',
                   background=[('active', accent_hover), ('pressed', '#0062CC')])
 
         style.configure('TLabelframe',
-                        background=bg_color,
-                        foreground=fg_color,
-                        bordercolor=border_color,
-                        borderwidth=1,
-                        relief='solid')
+                        background=bg_color, foreground=fg_color,
+                        bordercolor=border_color, borderwidth=1, relief='solid')
         style.configure('TLabelframe.Label',
-                        background=bg_color,
-                        foreground=keyword_color,
+                        background=bg_color, foreground=keyword_color,
                         font=('Segoe UI', 11, 'bold'))
 
         style.configure('TEntry',
-                        fieldbackground=entry_bg,
-                        foreground=entry_fg,
-                        insertcolor='black',
-                        borderwidth=1,
-                        relief='solid',
-                        bordercolor=border_color,
-                        padding=5)
+                        fieldbackground=entry_bg, foreground=entry_fg,
+                        insertcolor='black', borderwidth=1, relief='solid',
+                        bordercolor=border_color, padding=5)
 
         style.configure('TPanedwindow', background=bg_color)
-        style.configure('Horizontal.TScale', background=bg_color, troughcolor=border_color, sliderthickness=15)
-        style.configure('Vertical.TScale', background=bg_color, troughcolor=border_color, sliderthickness=15)
-        style.configure('Horizontal.TProgressbar', background=accent_color, troughcolor=border_color, borderwidth=0)
+        style.configure('Horizontal.TScale', background=bg_color,
+                        troughcolor=border_color, sliderthickness=15)
+        style.configure('Vertical.TScale', background=bg_color,
+                        troughcolor=border_color, sliderthickness=15)
+        style.configure('Horizontal.TProgressbar', background=accent_color,
+                        troughcolor=border_color, borderwidth=0)
 
         self.root.option_add('*Listbox.Background', entry_bg)
         self.root.option_add('*Listbox.Foreground', entry_fg)
@@ -122,11 +114,8 @@ class TrackerGUI:
         self.root.option_add('*Listbox.font', ('Segoe UI', 10))
 
         style.configure("Vertical.TScrollbar",
-                        background='#B2BEC3',
-                        troughcolor=bg_color,
-                        arrowcolor='#2D3436',
-                        relief="flat",
-                        borderwidth=0)
+                        background='#B2BEC3', troughcolor=bg_color,
+                        arrowcolor='#2D3436', relief="flat", borderwidth=0)
 
     def get_neuron_color(self, neuron_id):
         return NEURON_COLORS[(neuron_id - 1) % len(NEURON_COLORS)]
@@ -152,7 +141,6 @@ class TrackerGUI:
         self.main_paned.add(right, weight=0)
 
         self.ctrl_canvas = tk.Canvas(right, width=400, bg='#F5F7FA', highlightthickness=0)
-
         scrollbar = ttk.Scrollbar(right, orient="vertical", command=self.ctrl_canvas.yview)
         self.ctrl_frame = ttk.Frame(self.ctrl_canvas)
         self.ctrl_canvas.configure(yscrollcommand=scrollbar.set)
@@ -160,12 +148,18 @@ class TrackerGUI:
         self.ctrl_canvas.pack(side="left", fill="both", expand=True)
         self.ctrl_window = self.ctrl_canvas.create_window((0, 0), window=self.ctrl_frame, anchor="nw")
         self.ctrl_frame.bind("<Configure>",
-                             lambda e: self.ctrl_canvas.configure(scrollregion=self.ctrl_canvas.bbox("all")))
-        self.ctrl_canvas.bind("<Configure>", lambda e: self.ctrl_canvas.itemconfig(self.ctrl_window, width=e.width))
-        self.ctrl_canvas.bind("<Enter>", lambda e: self.ctrl_canvas.bind_all("<MouseWheel>",
-                                                                              lambda ev: self.ctrl_canvas.yview_scroll(
-                                                                                  int(-1 * (ev.delta / 120)), "units")))
-        self.ctrl_canvas.bind("<Leave>", lambda e: self.ctrl_canvas.unbind_all("<MouseWheel>"))
+                             lambda e: self.ctrl_canvas.configure(
+                                 scrollregion=self.ctrl_canvas.bbox("all")))
+        self.ctrl_canvas.bind("<Configure>",
+                              lambda e: self.ctrl_canvas.itemconfig(
+                                  self.ctrl_window, width=e.width))
+        self.ctrl_canvas.bind("<Enter>",
+                              lambda e: self.ctrl_canvas.bind_all(
+                                  "<MouseWheel>",
+                                  lambda ev: self.ctrl_canvas.yview_scroll(
+                                      int(-1 * (ev.delta / 120)), "units")))
+        self.ctrl_canvas.bind("<Leave>",
+                              lambda e: self.ctrl_canvas.unbind_all("<MouseWheel>"))
 
         self.setup_controls()
 
@@ -227,16 +221,15 @@ class TrackerGUI:
         # ── 神经元选择 ────────────────────────────────────────────────────
         f4 = ttk.LabelFrame(p, text="🧠 神经元选择", padding=10)
         f4.pack(fill="x", pady=pad, padx=5)
-
         row_n = ttk.Frame(f4)
         row_n.pack(fill="x")
         ttk.Label(row_n, text="ID:").pack(side="left")
         self.neuron_var = tk.StringVar(value="1")
-        self.neuron_spinbox = ttk.Spinbox(row_n, from_=1, to=99, width=5, textvariable=self.neuron_var,
+        self.neuron_spinbox = ttk.Spinbox(row_n, from_=1, to=99, width=5,
+                                          textvariable=self.neuron_var,
                                           command=self.on_neuron_change)
         self.neuron_spinbox.pack(side="left", padx=5)
         self.neuron_spinbox.bind('<Return>', lambda e: self.on_neuron_change())
-
         self.neuron_color_label = tk.Label(row_n, text="      ", bg='red', width=6, relief="flat")
         self.neuron_color_label.pack(side="left", padx=10)
         self.update_neuron_color_display()
@@ -244,9 +237,8 @@ class TrackerGUI:
         # ── 标记必经点 ────────────────────────────────────────────────────
         f5 = ttk.LabelFrame(p, text="📍 标记必经点", padding=10)
         f5.pack(fill="x", pady=pad, padx=5)
-
-        ttk.Label(f5, text="左键：添加 | 右键：删除", font=("Segoe UI", 9),
-                  foreground="#808080").pack(anchor="w")
+        ttk.Label(f5, text="左键：添加 | 右键：删除末点 | Ctrl+Z：撤销",
+                  font=("Segoe UI", 9), foreground="#808080").pack(anchor="w")
 
         self.marker_info = tk.StringVar(value="当前神经元无标记")
         ttk.Label(f5, textvariable=self.marker_info, foreground="#4A90E2",
@@ -254,8 +246,10 @@ class TrackerGUI:
 
         btn_row = ttk.Frame(f5)
         btn_row.pack(fill="x", pady=5)
+        ttk.Button(btn_row, text="↩ 撤销",
+                   command=self.undo_last_marker).pack(side="left", fill="x", expand=True, padx=(0, 2))
         ttk.Button(btn_row, text="清除当前",
-                   command=self.clear_current_markers).pack(side="left", fill="x", expand=True, padx=(0, 2))
+                   command=self.clear_current_markers).pack(side="left", fill="x", expand=True, padx=2)
         ttk.Button(btn_row, text="清除全部",
                    command=self.clear_all_markers).pack(side="left", fill="x", expand=True, padx=(2, 0))
 
@@ -332,7 +326,6 @@ class TrackerGUI:
         f9 = ttk.LabelFrame(p, text="💾 导出", padding=10)
         f9.pack(fill="x", pady=pad, padx=5)
 
-        # FPS & 像素比例（速度计算用）
         param_row = ttk.Frame(f9)
         param_row.pack(fill="x", pady=(0, 6))
         ttk.Label(param_row, text="FPS:").pack(side="left")
@@ -357,8 +350,10 @@ class TrackerGUI:
         f10 = ttk.LabelFrame(p, text="📌 状态", padding=10)
         f10.pack(fill="x", pady=pad, padx=5)
         self.status = tk.StringVar(value="请加载帧")
-        ttk.Label(f10, textvariable=self.status, wraplength=360, foreground="#4A90E2").pack(fill="x")
-        self.progress = ttk.Progressbar(f10, mode='determinate', style='Horizontal.TProgressbar')
+        ttk.Label(f10, textvariable=self.status, wraplength=360,
+                  foreground="#4A90E2").pack(fill="x")
+        self.progress = ttk.Progressbar(f10, mode='determinate',
+                                        style='Horizontal.TProgressbar')
         self.progress.pack(fill="x", pady=5)
 
     def bind_events(self):
@@ -376,6 +371,9 @@ class TrackerGUI:
         self.root.bind("<Down>", lambda e: self.change_frame(-10))
         self.root.bind("<Return>", lambda e: self.confirm_result())
         self.root.bind("<Escape>", lambda e: self.cancel_preview())
+
+        # Ctrl+Z 撤销标记
+        self.root.bind("<Control-z>", lambda e: self.undo_last_marker())
 
         for i in range(1, 10):
             self.root.bind(f"<Key-{i}>", lambda e, n=i: self.quick_select_neuron(n))
@@ -404,11 +402,15 @@ class TrackerGUI:
     def update_marker_info(self):
         markers = self.tracker.get_neuron_markers(self.current_neuron_id)
         waypoints = self.tracker.get_all_waypoints(self.current_neuron_id)
+        undo_depth = len(self.marker_undo_stack)
         if not markers:
-            self.marker_info.set(f"N{self.current_neuron_id}: 无标记")
+            self.marker_info.set(f"N{self.current_neuron_id}: 无标记  (撤销栈:{undo_depth})")
         else:
             frames = sorted(markers.keys())
-            self.marker_info.set(f"N{self.current_neuron_id}: {len(waypoints)}个必经点 @ 帧{frames}")
+            self.marker_info.set(
+                f"N{self.current_neuron_id}: {len(waypoints)}个必经点 @ 帧{frames}"
+                f"  (撤销栈:{undo_depth})"
+            )
 
     def browse_input(self):
         p = filedialog.askdirectory()
@@ -431,9 +433,13 @@ class TrackerGUI:
         self.progress['value'] = 0
         self.root.update()
 
+        # 加载新帧时清空撤销栈
+        self.marker_undo_stack.clear()
+
         start_time = time.time()
-        if self.tracker.load_frames(self.input_dir,
-                                    lambda p: (setattr(self.progress, 'value', p * 100), self.root.update())):
+        if self.tracker.load_frames(
+                self.input_dir,
+                lambda p: (setattr(self.progress, 'value', p * 100), self.root.update())):
             n = len(self.tracker.frames)
             load_time = time.time() - start_time
             self.frame_slider.configure(to=n - 1)
@@ -448,7 +454,8 @@ class TrackerGUI:
     def change_frame(self, d):
         if not self.tracker.frames:
             return
-        self.current_frame_idx = max(0, min(len(self.tracker.frames) - 1, self.current_frame_idx + d))
+        self.current_frame_idx = max(0, min(len(self.tracker.frames) - 1,
+                                            self.current_frame_idx + d))
         self.frame_var.set(str(self.current_frame_idx))
         self.frame_slider.set(self.current_frame_idx)
         self.update_display()
@@ -542,32 +549,104 @@ class TrackerGUI:
         self._pan_updating = False
 
     def canvas_to_image(self, cx, cy):
-        return int((cx - self.pan_x) / self.zoom_level), int((cy - self.pan_y) / self.zoom_level)
+        return (int((cx - self.pan_x) / self.zoom_level),
+                int((cy - self.pan_y) / self.zoom_level))
+
+    # ------------------------------------------------------------------ #
+    #  标记操作（含撤销栈）                                                 #
+    # ------------------------------------------------------------------ #
 
     def on_click(self, e):
+        """左键：添加标记，记录到撤销栈。"""
         if not self.tracker.frames:
             return
         ix, iy = self.canvas_to_image(e.x, e.y)
         if not (0 <= ix < self.tracker.width and 0 <= iy < self.tracker.height):
             return
 
+        pt = (ix, iy)
         self.tracker.add_marker(self.current_neuron_id, self.current_frame_idx, ix, iy)
-        self.update_marker_info()
 
+        # 记录到撤销栈
+        self.marker_undo_stack.append({
+            'action':    'add',
+            'neuron_id': self.current_neuron_id,
+            'frame_idx': self.current_frame_idx,
+            'point':     pt,
+        })
+
+        self.update_marker_info()
         total = len(self.tracker.get_all_waypoints(self.current_neuron_id))
-        self.status.set(f"N{self.current_neuron_id}: 添加 ({ix}, {iy}) @ 帧{self.current_frame_idx} [共{total}点]")
+        self.status.set(
+            f"N{self.current_neuron_id}: 添加 ({ix},{iy}) @ 帧{self.current_frame_idx} "
+            f"[共{total}点]  Ctrl+Z可撤销"
+        )
         self.update_display()
 
     def on_right_click(self, e):
+        """右键：删除当前帧最后一个标记，记录到撤销栈。"""
         if not self.tracker.frames:
             return
-        self.tracker.remove_last_marker(self.current_neuron_id, self.current_frame_idx)
+
+        removed = self.tracker.remove_last_marker(
+            self.current_neuron_id, self.current_frame_idx
+        )
+
+        if removed is not None:
+            # 记录到撤销栈（action='remove' 表示删除，撤销时要重新 add）
+            self.marker_undo_stack.append({
+                'action':    'remove',
+                'neuron_id': self.current_neuron_id,
+                'frame_idx': self.current_frame_idx,
+                'point':     removed,
+            })
+            self.status.set(
+                f"N{self.current_neuron_id}: 删除 {removed} @ 帧{self.current_frame_idx}  "
+                f"Ctrl+Z可撤销"
+            )
+        else:
+            self.status.set(f"N{self.current_neuron_id}: 当前帧无标记可删")
+
         self.update_marker_info()
-        self.status.set(f"N{self.current_neuron_id}: 删除标记 @ 帧{self.current_frame_idx}")
+        self.update_display()
+
+    def undo_last_marker(self):
+        """撤销最近一次标记添加或删除操作（Ctrl+Z / 撤销按钮）。"""
+        if not self.marker_undo_stack:
+            self.status.set("撤销栈为空，无可撤销操作")
+            return
+
+        record = self.marker_undo_stack.pop()
+        action    = record['action']
+        nid       = record['neuron_id']
+        frame_idx = record['frame_idx']
+        pt        = record['point']
+
+        if action == 'add':
+            # 上次是"添加"，撤销 = 删除该精确点
+            self.tracker.remove_specific_marker(nid, frame_idx, pt)
+            self.status.set(
+                f"撤销：移除 N{nid} 帧{frame_idx} 的 {pt}  "
+                f"(栈剩余:{len(self.marker_undo_stack)})"
+            )
+        else:
+            # 上次是"删除"，撤销 = 重新添加
+            self.tracker.add_marker(nid, frame_idx, pt[0], pt[1])
+            self.status.set(
+                f"撤销：恢复 N{nid} 帧{frame_idx} 的 {pt}  "
+                f"(栈剩余:{len(self.marker_undo_stack)})"
+            )
+
+        self.update_marker_info()
         self.update_display()
 
     def clear_current_markers(self):
         self.tracker.clear_neuron_markers(self.current_neuron_id)
+        # 清除当前神经元相关的撤销记录
+        self.marker_undo_stack = [
+            r for r in self.marker_undo_stack
+            if r['neuron_id'] != self.current_neuron_id
+        ]
         self.update_marker_info()
         self.status.set(f"已清除 N{self.current_neuron_id} 的所有标记")
         self.update_display()
@@ -575,6 +654,7 @@ class TrackerGUI:
     def clear_all_markers(self):
         if messagebox.askyesno("确认", "清除所有神经元的标记？"):
             self.tracker.markers.clear()
+            self.marker_undo_stack.clear()
             self.update_marker_info()
             self.status.set("已清除所有标记")
             self.update_display()
@@ -586,19 +666,28 @@ class TrackerGUI:
             self.tracker.max_turn_angle = int(self.angle_var.get())
             self.tracker.max_step_distance = int(self.step_var.get())
             self.tracker._search_grids.clear()
-            self.status.set(f"参数已更新: 转角≤{self.tracker.max_turn_angle}°, 步距≤{self.tracker.max_step_distance}")
+            self.status.set(
+                f"参数已更新: 转角≤{self.tracker.max_turn_angle}°, "
+                f"步距≤{self.tracker.max_step_distance}"
+            )
         except:
             pass
 
     def compute_current_neuron(self):
+        """计算（或重算）当前神经元的完整轨迹。"""
         markers = self.tracker.get_neuron_markers(self.current_neuron_id)
         if not markers:
             messagebox.showwarning("警告", f"N{self.current_neuron_id} 没有标记点")
             return
 
         self.apply_params()
-        self.status.set(f"计算 N{self.current_neuron_id} 轨迹...")
+        self.status.set(f"计算 N{self.current_neuron_id} 轨迹（完整重算）...")
         self.root.update()
+
+        # 若当前处于编辑模式，先清除旧 preview 避免渲染干扰
+        if self.preview_neuron_id == self.current_neuron_id:
+            self.preview_result = None
+            self.preview_neuron_id = None
 
         start_time = time.time()
         result = self.tracker.compute_neuron_trajectory(self.current_neuron_id)
@@ -643,7 +732,9 @@ class TrackerGUI:
                 success += 1
 
         self.update_result_list()
-        self.status.set(f"完成: {success}/{len(neuron_ids)} 个神经元, 总耗时{total_time:.2f}秒")
+        self.status.set(
+            f"完成: {success}/{len(neuron_ids)} 个神经元, 总耗时{total_time:.2f}秒"
+        )
         self.update_display()
 
     def confirm_result(self):
@@ -697,11 +788,16 @@ class TrackerGUI:
             self.update_display()
 
     # ------------------------------------------------------------------ #
-    #  新功能：编辑重算                                                     #
+    #  编辑重算                                                             #
     # ------------------------------------------------------------------ #
 
     def edit_selected_result(self):
-        """将已确认的结果切换回可编辑状态，允许补加标记后重新计算。"""
+        """
+        将已确认的结果移回 preview 状态：
+        - 用户可继续添加/删除标记（支持撤销）
+        - 点击「▶ 计算当前」会完整重算整条轨迹
+        - Enter 确认新结果，Esc 取消（恢复旧结果）
+        """
         sel = self.result_list.curselection()
         if not sel:
             messagebox.showinfo("提示", "请先在列表中选择一个神经元")
@@ -720,16 +816,25 @@ class TrackerGUI:
             self.preview_neuron_id = nid
             self.update_result_list()
 
-        self.compute_info.set(f"✏️ 正在编辑 N{nid}\n添加/删除标记后点击「计算当前」重算\nEnter确认原结果 / Esc取消")
-        self.status.set(f"N{nid} 编辑模式：可继续添加标记后重算")
+        # 清空该神经元相关的旧撤销记录，以免混淆
+        self.marker_undo_stack = [
+            r for r in self.marker_undo_stack if r['neuron_id'] != nid
+        ]
+
+        self.compute_info.set(
+            f"✏️ 编辑模式 N{nid}\n"
+            f"左键加点 / Ctrl+Z撤销\n"
+            f"点击「▶ 计算当前」完整重算\n"
+            f"Enter确认 / Esc取消"
+        )
+        self.status.set(f"N{nid} 编辑模式：添加标记后点「计算当前」重算全轨迹")
         self.update_display()
 
     # ------------------------------------------------------------------ #
-    #  新功能：导出速度                                                     #
+    #  导出速度                                                             #
     # ------------------------------------------------------------------ #
 
     def export_speed_data(self):
-        """导出所有神经元逐帧生长速度到 CSV。"""
         if not self.tracker.tracking_results:
             messagebox.showwarning("警告", "无追踪结果")
             return
@@ -748,7 +853,8 @@ class TrackerGUI:
         all_speeds = self.tracker.compute_all_speeds(fps=fps, pixel_um=pixel_um)
 
         with open(path, 'w', encoding='utf-8') as f:
-            f.write("neuron_id,frame,tip_x,tip_y,dx,dy,speed_px_per_frame,speed_um_per_sec\n")
+            f.write("neuron_id,frame,tip_x,tip_y,dx,dy,"
+                    "speed_px_per_frame,speed_um_per_sec\n")
             for nid in sorted(all_speeds.keys()):
                 for rec in all_speeds[nid]:
                     f.write(
@@ -757,8 +863,15 @@ class TrackerGUI:
                         f"{rec['speed_px_per_frame']},{rec['speed_um_per_sec']}\n"
                     )
 
-        self.status.set(f"速度数据已保存: {path}")
-        messagebox.showinfo("完成", f"速度CSV导出完成！\n{path}")
+        # 状态栏显示各神经元平均速度摘要
+        summary = []
+        for nid, records in sorted(all_speeds.items()):
+            if records:
+                avg = sum(r['speed_um_per_sec'] for r in records) / len(records)
+                summary.append(f"N{nid}均速{avg:.2f}μm/s")
+
+        self.status.set("速度已保存: " + path + "  |  " + "  ".join(summary))
+        messagebox.showinfo("完成", f"速度CSV导出完成！\n{path}\n\n" + "\n".join(summary))
 
     # ------------------------------------------------------------------ #
     #  原有导出方法                                                         #
@@ -772,7 +885,8 @@ class TrackerGUI:
         os.makedirs(self.output_dir, exist_ok=True)
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         path = os.path.join(self.output_dir, "neuron_tracking_smooth.mp4")
-        out = cv2.VideoWriter(path, fourcc, 10, (self.tracker.width, self.tracker.height), True)
+        out = cv2.VideoWriter(path, fourcc, 10,
+                              (self.tracker.width, self.tracker.height), True)
         for i in range(len(self.tracker.frames)):
             out.write(self.render(i, True))
             self.progress['value'] = (i + 1) / len(self.tracker.frames) * 100
@@ -824,10 +938,8 @@ class TrackerGUI:
                  (self.tracker.width, self.tracker.height - self.tracker.edge_margin), (0, 100, 0), 1)
 
         results_to_render = []
-
         for nid, result in self.tracker.tracking_results.items():
             results_to_render.append((nid, result, False))
-
         if self.preview_result and self.preview_neuron_id:
             results_to_render.append((self.preview_neuron_id, self.preview_result, True))
 
@@ -855,7 +967,8 @@ class TrackerGUI:
                 if frame_path:
                     cv2.circle(vis, frame_path[0], 5, (0, 255, 0), -1)
                     cv2.circle(vis, frame_path[-1], 6, (0, 165, 255), -1)
-                    cv2.putText(vis, f"N{nid}", (frame_path[-1][0] + 5, frame_path[-1][1] - 5),
+                    cv2.putText(vis, f"N{nid}",
+                                (frame_path[-1][0] + 5, frame_path[-1][1] - 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
 
             if not for_export:
@@ -865,7 +978,6 @@ class TrackerGUI:
         if not for_export:
             for nid, frame_markers in self.tracker.markers.items():
                 color = self.get_neuron_color(nid)
-
                 all_pts = []
                 for f, pts in frame_markers.items():
                     for pt in pts:
@@ -880,16 +992,19 @@ class TrackerGUI:
 
                 if all_pts:
                     rightmost = max(all_pts, key=lambda x: x[0][0])
-                    cv2.putText(vis, f"N{nid}", (rightmost[0][0] + 12, rightmost[0][1] - 5),
+                    cv2.putText(vis, f"N{nid}",
+                                (rightmost[0][0] + 12, rightmost[0][1] - 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
 
         if for_export:
-            cv2.putText(vis, f"Frame {idx}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            cv2.putText(vis, f"Frame {idx}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
             y_pos = 60
             for nid in sorted(self.tracker.tracking_results.keys()):
                 color = self.get_neuron_color(nid)
                 cv2.rectangle(vis, (10, y_pos - 12), (30, y_pos + 2), color, -1)
-                cv2.putText(vis, f"N{nid}", (35, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                cv2.putText(vis, f"N{nid}", (35, y_pos),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                 y_pos += 20
 
         return vis
@@ -898,7 +1013,8 @@ class TrackerGUI:
         if not self.tracker.frames:
             return
         vis = cv2.cvtColor(self.render(self.current_frame_idx), cv2.COLOR_BGR2RGB)
-        nw, nh = int(self.tracker.width * self.zoom_level), int(self.tracker.height * self.zoom_level)
+        nw = int(self.tracker.width * self.zoom_level)
+        nh = int(self.tracker.height * self.zoom_level)
         if nw < 1 or nh < 1:
             return
         vis_scaled = cv2.resize(vis, (nw, nh))
@@ -912,7 +1028,8 @@ class TrackerGUI:
         sx2, sy2 = min(nw, cw - x0), min(nh, ch - y0)
         dx1, dy1 = max(0, x0), max(0, y0)
         if sx2 > sx1 and sy2 > sy1:
-            canvas_img[dy1:dy1 + (sy2 - sy1), dx1:dx1 + (sx2 - sx1)] = vis_scaled[sy1:sy2, sx1:sx2]
+            canvas_img[dy1:dy1 + (sy2 - sy1), dx1:dx1 + (sx2 - sx1)] = \
+                vis_scaled[sy1:sy2, sx1:sx2]
         self.photo = ImageTk.PhotoImage(Image.fromarray(canvas_img))
         self.canvas.delete("all")
         self.canvas.create_image(0, 0, anchor="nw", image=self.photo)

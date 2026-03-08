@@ -91,13 +91,28 @@ class NeuronTracker:
         self.markers[neuron_id][frame_idx].append((int(x), int(y)))
 
     def remove_last_marker(self, neuron_id, frame_idx):
+        """删除指定神经元在指定帧的最后一个标记，返回被删除的点（或 None）。"""
         if neuron_id in self.markers and frame_idx in self.markers[neuron_id]:
             if self.markers[neuron_id][frame_idx]:
-                self.markers[neuron_id][frame_idx].pop()
+                pt = self.markers[neuron_id][frame_idx].pop()
                 if not self.markers[neuron_id][frame_idx]:
                     del self.markers[neuron_id][frame_idx]
                 if not self.markers[neuron_id]:
                     del self.markers[neuron_id]
+                return pt
+        return None
+
+    def remove_specific_marker(self, neuron_id, frame_idx, point):
+        """删除指定神经元在指定帧的某个精确坐标标记。"""
+        if neuron_id in self.markers and frame_idx in self.markers[neuron_id]:
+            try:
+                self.markers[neuron_id][frame_idx].remove(point)
+                if not self.markers[neuron_id][frame_idx]:
+                    del self.markers[neuron_id][frame_idx]
+                if not self.markers[neuron_id]:
+                    del self.markers[neuron_id]
+            except ValueError:
+                pass
 
     def clear_neuron_markers(self, neuron_id):
         if neuron_id in self.markers:
@@ -371,7 +386,6 @@ class NeuronTracker:
         smoothness = self.compute_smoothness_vectorized(path, coords_final)
 
         scores = brightness_final * (linearity ** self.linearity_weight) / (dist_final + 0.5)
-
         scores *= (1 + smoothness)
 
         left_bonus = np.abs(dx_final) / (dist_final + 0.1)
@@ -493,7 +507,6 @@ class NeuronTracker:
         smoothness = self.compute_smoothness_vectorized(path, coords_final)
 
         scores = brightness_final * (linearity ** self.linearity_weight) / (dist_final + 0.5)
-
         scores *= (1 + 2.0 * smoothness)
 
         right_bonus = np.maximum(0, dx_final) / (dist_final + 0.1)
@@ -951,17 +964,12 @@ class NeuronTracker:
 
         参数
         ----
-        fps       : 视频帧率（帧/秒），用于将像素/帧转换为 μm/s
-        pixel_um  : 每像素对应的微米数（默认 1.0 → 输出像素/帧）
+        fps       : 视频帧率（帧/秒）
+        pixel_um  : 每像素对应的微米数
 
         返回
         ----
-        list of dict，每条记录对应相邻两帧间的速度：
-            frame              : 当前帧编号
-            tip_x, tip_y       : 当前帧末梢坐标
-            dx, dy             : 末梢位移（像素）
-            speed_px_per_frame : 位移距离（像素/帧）
-            speed_um_per_sec   : 换算后速度（μm/s）
+        list of dict，每条记录对应相邻两帧间的速度。
         """
         result = self.tracking_results.get(neuron_id)
         if not result:
