@@ -16,6 +16,7 @@
 ### 计算公式
 
 **第一步：计算像素位移**
+<img width="496" height="57" alt="image" src="https://github.com/user-attachments/assets/a256726b-2312-46e3-a0d9-58834676d2da" />
 
 \[
 \text{dist\_px} = \sqrt{(x_{curr} - x_{prev})^2 + (y_{curr} - y_{prev})^2}
@@ -24,6 +25,7 @@
 这是两帧之间末梢移动的**欧氏距离**（像素）。
 
 **第二步：换算为物理速度**
+<img width="442" height="42" alt="image" src="https://github.com/user-attachments/assets/31c507fb-cadd-4361-97a8-9075e1475b1d" />
 
 \[
 \text{speed (μm/s)} = \text{dist\_px} \times \text{pixel\_um} \times \text{fps}
@@ -37,6 +39,7 @@
 ### 举个例子
 
 > FPS = 10，pixel_um = 0.5 μm/px，两帧末梢位移 = 6 像素
+<img width="345" height="23" alt="image" src="https://github.com/user-attachments/assets/d7d2487c-981f-4113-8c9b-f031b043aeb9" />
 
 \[
 \text{speed} = 6 \times 0.5 \times 10 = 30 \text{ μm/s}
