@@ -35,103 +35,98 @@ class TrackerGUI:
         self.input_dir = DEFAULT_INPUT_DIR
         self.output_dir = DEFAULT_OUTPUT_DIR
 
+        # 速度导出参数
+        self.fps_var = tk.StringVar(value="10")
+        self.pixel_um_var = tk.StringVar(value="1.0")
+
         self.setup_styles()
         self.setup_ui()
         self.bind_events()
 
     def setup_styles(self):
         style = ttk.Style()
-        style.theme_use('clam')  # 'clam' is usually a good base for custom themes
+        style.theme_use('clam')
 
-        # Colors
-        bg_color = '#E9F1FA'
-        fg_color = '#333333'
+        bg_color = '#F5F7FA'
+        fg_color = '#2D3436'
         panel_bg = '#FFFFFF'
-        accent_color = '#00ABE4'
-        accent_hover = '#0095c8'
+        accent_color = '#74B9FF'
+        keyword_color = '#2C3E50'
+        accent_hover = '#0984E3'
         button_bg = '#FFFFFF'
-        button_fg = '#333333'
+        button_fg = '#2D3436'
         entry_bg = '#FFFFFF'
-        entry_fg = '#333333'
-        select_bg = '#00ABE4'
+        entry_fg = '#2D3436'
+        select_bg = '#74B9FF'
+        border_color = '#DFE6E9'
 
-        # Configure root
         self.root.configure(bg=bg_color)
-        
-        # General styles
-        style.configure('.', background=bg_color, foreground=fg_color, fieldbackground=entry_bg, font=('Segoe UI', 10))
+
+        style.configure('.', background=bg_color, foreground=fg_color, fieldbackground=entry_bg,
+                        font=('Segoe UI', 10))
         style.configure('TFrame', background=bg_color)
         style.configure('TLabel', background=bg_color, foreground=fg_color)
-        
-        # Buttons
-        style.configure('TButton', 
-                        background=button_bg, 
-                        foreground=button_fg, 
-                        borderwidth=0, 
+
+        style.configure('TButton',
+                        background=button_bg,
+                        foreground=button_fg,
+                        borderwidth=1,
+                        bordercolor=border_color,
                         focuscolor=select_bg,
                         relief='flat',
-                        padding=(8, 4))
-        style.map('TButton', 
-                  background=[('active', '#E0E8F0'), ('pressed', '#D0D8E0')],
-                  foreground=[('active', '#00ABE4')])
-        
-        # Accent Button
-        style.configure('Accent.TButton', 
-                        background=accent_color, 
+                        padding=(10, 6))
+        style.map('TButton',
+                  background=[('active', '#F0F3F5'), ('pressed', '#E2E6EA')],
+                  foreground=[('active', accent_hover)],
+                  bordercolor=[('active', accent_color)])
+
+        style.configure('Accent.TButton',
+                        background=accent_color,
                         foreground='white',
                         borderwidth=0,
                         relief='flat',
-                        padding=(8, 4))
-        style.map('Accent.TButton', 
-                  background=[('active', accent_hover), ('pressed', '#007ea3')])
+                        padding=(10, 6))
+        style.map('Accent.TButton',
+                  background=[('active', accent_hover), ('pressed', '#0062CC')])
 
-        # LabelFrame
-        style.configure('TLabelframe', 
-                        background=bg_color, 
-                        foreground=fg_color, 
-                        bordercolor='#D0D8E0',
+        style.configure('TLabelframe',
+                        background=bg_color,
+                        foreground=fg_color,
+                        bordercolor=border_color,
                         borderwidth=1,
                         relief='solid')
-        style.configure('TLabelframe.Label', 
-                        background=bg_color, 
-                        foreground='#00ABE4',
-                        font=('Segoe UI', 10, 'bold'))
+        style.configure('TLabelframe.Label',
+                        background=bg_color,
+                        foreground=keyword_color,
+                        font=('Segoe UI', 11, 'bold'))
 
-        # Entry
-        style.configure('TEntry', 
-                        fieldbackground=entry_bg, 
+        style.configure('TEntry',
+                        fieldbackground=entry_bg,
                         foreground=entry_fg,
                         insertcolor='black',
                         borderwidth=1,
                         relief='solid',
-                        bordercolor='#D0D8E0')
-        
-        # PanedWindow
+                        bordercolor=border_color,
+                        padding=5)
+
         style.configure('TPanedwindow', background=bg_color)
-        
-        # Scale
-        style.configure('Horizontal.TScale', background=bg_color, troughcolor='#D0D8E0', sliderthickness=15)
-        style.configure('Vertical.TScale', background=bg_color, troughcolor='#D0D8E0', sliderthickness=15)
+        style.configure('Horizontal.TScale', background=bg_color, troughcolor=border_color, sliderthickness=15)
+        style.configure('Vertical.TScale', background=bg_color, troughcolor=border_color, sliderthickness=15)
+        style.configure('Horizontal.TProgressbar', background=accent_color, troughcolor=border_color, borderwidth=0)
 
-        # Progressbar
-        style.configure('Horizontal.TProgressbar', background=accent_color, troughcolor='#D0D8E0', borderwidth=0)
-
-        # Custom configurations for non-ttk widgets
         self.root.option_add('*Listbox.Background', entry_bg)
         self.root.option_add('*Listbox.Foreground', entry_fg)
         self.root.option_add('*Listbox.selectBackground', select_bg)
         self.root.option_add('*Listbox.selectForeground', 'white')
         self.root.option_add('*Listbox.relief', 'flat')
         self.root.option_add('*Listbox.font', ('Segoe UI', 10))
-        
-        # Scrollbar
+
         style.configure("Vertical.TScrollbar",
-            background='#D0D8E0',
-            troughcolor=bg_color,
-            arrowcolor='#333333',
-            relief="flat",
-            borderwidth=0
-        )
+                        background='#B2BEC3',
+                        troughcolor=bg_color,
+                        arrowcolor='#2D3436',
+                        relief="flat",
+                        borderwidth=0)
 
     def get_neuron_color(self, neuron_id):
         return NEURON_COLORS[(neuron_id - 1) % len(NEURON_COLORS)]
@@ -156,7 +151,7 @@ class TrackerGUI:
         right = ttk.Frame(self.main_paned, width=420)
         self.main_paned.add(right, weight=0)
 
-        self.ctrl_canvas = tk.Canvas(right, width=400, bg='#E9F1FA', highlightthickness=0)
+        self.ctrl_canvas = tk.Canvas(right, width=400, bg='#F5F7FA', highlightthickness=0)
 
         scrollbar = ttk.Scrollbar(right, orient="vertical", command=self.ctrl_canvas.yview)
         self.ctrl_frame = ttk.Frame(self.ctrl_canvas)
@@ -168,17 +163,17 @@ class TrackerGUI:
                              lambda e: self.ctrl_canvas.configure(scrollregion=self.ctrl_canvas.bbox("all")))
         self.ctrl_canvas.bind("<Configure>", lambda e: self.ctrl_canvas.itemconfig(self.ctrl_window, width=e.width))
         self.ctrl_canvas.bind("<Enter>", lambda e: self.ctrl_canvas.bind_all("<MouseWheel>",
-                                                                            lambda ev: self.ctrl_canvas.yview_scroll(
-                                                                                int(-1 * (ev.delta / 120)), "units")))
+                                                                              lambda ev: self.ctrl_canvas.yview_scroll(
+                                                                                  int(-1 * (ev.delta / 120)), "units")))
         self.ctrl_canvas.bind("<Leave>", lambda e: self.ctrl_canvas.unbind_all("<MouseWheel>"))
 
         self.setup_controls()
 
     def setup_controls(self):
         p = self.ctrl_frame
-        pad = 5  # Increased padding
+        pad = 5
 
-        # 文件
+        # ── 文件 ──────────────────────────────────────────────────────────
         f1 = ttk.LabelFrame(p, text="📁 文件", padding=10)
         f1.pack(fill="x", pady=pad, padx=5)
         ttk.Label(f1, text="输入:").grid(row=0, column=0, sticky="w")
@@ -191,10 +186,11 @@ class TrackerGUI:
         self.output_entry.insert(0, self.output_dir)
         self.output_entry.grid(row=1, column=1, sticky="ew", padx=5)
         ttk.Button(f1, text="...", command=self.browse_output, width=3).grid(row=1, column=2)
-        ttk.Button(f1, text="🔄 加载帧", command=self.load_frames, style='Accent.TButton').grid(row=2, column=0, columnspan=3, pady=10, sticky="ew")
+        ttk.Button(f1, text="🔄 加载帧", command=self.load_frames,
+                   style='Accent.TButton').grid(row=2, column=0, columnspan=3, pady=10, sticky="ew")
         f1.columnconfigure(1, weight=1)
 
-        # 导航
+        # ── 帧导航 ────────────────────────────────────────────────────────
         f2 = ttk.LabelFrame(p, text="🎬 帧导航", padding=10)
         f2.pack(fill="x", pady=pad, padx=5)
         row1 = ttk.Frame(f2)
@@ -204,19 +200,20 @@ class TrackerGUI:
         ttk.Entry(row1, textvariable=self.frame_var, width=6).pack(side="left", padx=5)
         self.frame_label = ttk.Label(row1, text="/ 0")
         self.frame_label.pack(side="left")
-        ttk.Button(row1, text="Go", command=self.goto_frame, width=4, style='Accent.TButton').pack(side="left", padx=10)
-        
+        ttk.Button(row1, text="Go", command=self.goto_frame, width=4,
+                   style='Accent.TButton').pack(side="left", padx=10)
+
         row2 = ttk.Frame(f2)
         row2.pack(fill="x", pady=5)
         ttk.Button(row2, text="⏮", command=lambda: self.change_frame(-10), width=4).pack(side="left", padx=2)
         ttk.Button(row2, text="◀", command=lambda: self.change_frame(-1), width=4).pack(side="left", padx=2)
         ttk.Button(row2, text="▶", command=lambda: self.change_frame(1), width=4).pack(side="left", padx=2)
         ttk.Button(row2, text="⏭", command=lambda: self.change_frame(10), width=4).pack(side="left", padx=2)
-        
+
         self.frame_slider = ttk.Scale(f2, from_=0, to=100, orient="horizontal", command=self.on_slider)
         self.frame_slider.pack(fill="x", pady=5)
 
-        # 缩放
+        # ── 缩放 ──────────────────────────────────────────────────────────
         f3 = ttk.LabelFrame(p, text="🔍 缩放", padding=10)
         f3.pack(fill="x", pady=pad, padx=5)
         row = ttk.Frame(f3)
@@ -227,7 +224,7 @@ class TrackerGUI:
         ttk.Button(row, text="+", command=lambda: self.zoom(0.25), width=4).pack(side="left")
         ttk.Button(row, text="适应", command=self.fit_zoom, width=6).pack(side="right")
 
-        # 神经元选择
+        # ── 神经元选择 ────────────────────────────────────────────────────
         f4 = ttk.LabelFrame(p, text="🧠 神经元选择", padding=10)
         f4.pack(fill="x", pady=pad, padx=5)
 
@@ -236,7 +233,7 @@ class TrackerGUI:
         ttk.Label(row_n, text="ID:").pack(side="left")
         self.neuron_var = tk.StringVar(value="1")
         self.neuron_spinbox = ttk.Spinbox(row_n, from_=1, to=99, width=5, textvariable=self.neuron_var,
-                                         command=self.on_neuron_change)
+                                          command=self.on_neuron_change)
         self.neuron_spinbox.pack(side="left", padx=5)
         self.neuron_spinbox.bind('<Return>', lambda e: self.on_neuron_change())
 
@@ -244,38 +241,47 @@ class TrackerGUI:
         self.neuron_color_label.pack(side="left", padx=10)
         self.update_neuron_color_display()
 
-        # 标记操作
+        # ── 标记必经点 ────────────────────────────────────────────────────
         f5 = ttk.LabelFrame(p, text="📍 标记必经点", padding=10)
         f5.pack(fill="x", pady=pad, padx=5)
 
-        ttk.Label(f5, text="左键：添加 | 右键：删除", font=("Segoe UI", 9), foreground="#808080").pack(anchor="w")
+        ttk.Label(f5, text="左键：添加 | 右键：删除", font=("Segoe UI", 9),
+                  foreground="#808080").pack(anchor="w")
 
         self.marker_info = tk.StringVar(value="当前神经元无标记")
-        ttk.Label(f5, textvariable=self.marker_info, foreground="#4A90E2", wraplength=360).pack(anchor="w", pady=5)
+        ttk.Label(f5, textvariable=self.marker_info, foreground="#4A90E2",
+                  wraplength=360).pack(anchor="w", pady=5)
 
         btn_row = ttk.Frame(f5)
         btn_row.pack(fill="x", pady=5)
-        ttk.Button(btn_row, text="清除当前", command=self.clear_current_markers).pack(side="left", fill="x", expand=True, padx=(0, 2))
-        ttk.Button(btn_row, text="清除全部", command=self.clear_all_markers).pack(side="left", fill="x", expand=True, padx=(2, 0))
+        ttk.Button(btn_row, text="清除当前",
+                   command=self.clear_current_markers).pack(side="left", fill="x", expand=True, padx=(0, 2))
+        ttk.Button(btn_row, text="清除全部",
+                   command=self.clear_all_markers).pack(side="left", fill="x", expand=True, padx=(2, 0))
 
-        # 计算轨迹
+        # ── 计算轨迹 ──────────────────────────────────────────────────────
         f6 = ttk.LabelFrame(p, text="🔬 计算轨迹", padding=10)
         f6.pack(fill="x", pady=pad, padx=5)
 
         btn_row2 = ttk.Frame(f6)
         btn_row2.pack(fill="x", pady=5)
-        ttk.Button(btn_row2, text="▶ 计算当前", command=self.compute_current_neuron, style='Accent.TButton').pack(side="left", fill="x", expand=True, padx=(0, 2))
-        ttk.Button(btn_row2, text="▶▶ 计算全部", command=self.compute_all_neurons, style='Accent.TButton').pack(side="left", fill="x", expand=True, padx=(2, 0))
+        ttk.Button(btn_row2, text="▶ 计算当前", command=self.compute_current_neuron,
+                   style='Accent.TButton').pack(side="left", fill="x", expand=True, padx=(0, 2))
+        ttk.Button(btn_row2, text="▶▶ 计算全部", command=self.compute_all_neurons,
+                   style='Accent.TButton').pack(side="left", fill="x", expand=True, padx=(2, 0))
 
         self.compute_info = tk.StringVar(value="")
-        ttk.Label(f6, textvariable=self.compute_info, foreground="#50C878", wraplength=360).pack(anchor="w", pady=5)
+        ttk.Label(f6, textvariable=self.compute_info, foreground="#50C878",
+                  wraplength=360).pack(anchor="w", pady=5)
 
         btn_row3 = ttk.Frame(f6)
         btn_row3.pack(fill="x", pady=5)
-        ttk.Button(btn_row3, text="✓ 确认", command=self.confirm_result, style='Accent.TButton').pack(side="left", fill="x", expand=True, padx=(0, 2))
-        ttk.Button(btn_row3, text="✗ 取消", command=self.cancel_preview).pack(side="left", fill="x", expand=True, padx=(2, 0))
+        ttk.Button(btn_row3, text="✓ 确认", command=self.confirm_result,
+                   style='Accent.TButton').pack(side="left", fill="x", expand=True, padx=(0, 2))
+        ttk.Button(btn_row3, text="✗ 取消",
+                   command=self.cancel_preview).pack(side="left", fill="x", expand=True, padx=(2, 0))
 
-        # 参数
+        # ── 参数 ──────────────────────────────────────────────────────────
         f7 = ttk.LabelFrame(p, text="⚙️ 参数", padding=10)
         f7.pack(fill="x", pady=pad, padx=5)
         g = ttk.Frame(f7)
@@ -291,42 +297,63 @@ class TrackerGUI:
         ttk.Label(g, text="转角:").grid(row=1, column=0, sticky="w", pady=5)
         self.angle_var = tk.StringVar(value="60")
         ttk.Entry(g, textvariable=self.angle_var, width=5).grid(row=1, column=1, padx=5)
-        ttk.Label(g, text="°").grid(row=1, column=1, sticky="e") 
+        ttk.Label(g, text="°").grid(row=1, column=1, sticky="e")
         ttk.Label(g, text="步距:").grid(row=1, column=2, sticky="w", padx=(10, 0))
         self.step_var = tk.StringVar(value="15")
         ttk.Entry(g, textvariable=self.step_var, width=5).grid(row=1, column=3, padx=5)
 
         ttk.Button(f7, text="应用参数", command=self.apply_params).pack(pady=10, fill="x")
 
-        # 平滑约束说明
+        # ── 平滑约束说明 ──────────────────────────────────────────────────
         f_smooth = ttk.LabelFrame(p, text="🔄 平滑约束", padding=10)
         f_smooth.pack(fill="x", pady=pad, padx=5)
         ttk.Label(f_smooth, text="✓ 转角限制  ✓ 步距限制  ✓ 方向连续",
-                 font=("Segoe UI", 9), justify="left", foreground="#50C878").pack(anchor="w")
+                  font=("Segoe UI", 9), justify="left", foreground="#50C878").pack(anchor="w")
 
-        # 结果列表
+        # ── 追踪结果 ──────────────────────────────────────────────────────
         f8 = ttk.LabelFrame(p, text="📊 追踪结果", padding=10)
         f8.pack(fill="x", pady=pad, padx=5)
 
-        self.result_list = tk.Listbox(f8, height=5, font=("Consolas", 9), borderwidth=0, highlightthickness=0)
+        self.result_list = tk.Listbox(f8, height=5, font=("Consolas", 9),
+                                      borderwidth=0, highlightthickness=0)
         self.result_list.pack(fill="x", pady=5)
         self.result_list.bind('<<ListboxSelect>>', self.on_result_select)
 
         btn_row4 = ttk.Frame(f8)
         btn_row4.pack(fill="x", pady=5)
-        ttk.Button(btn_row4, text="删除选中", command=self.delete_selected_result).pack(side="left", fill="x", expand=True, padx=(0, 2))
-        ttk.Button(btn_row4, text="清空全部", command=self.clear_all_results).pack(side="left", fill="x", expand=True, padx=(2, 0))
+        ttk.Button(btn_row4, text="✏️ 编辑重算",
+                   command=self.edit_selected_result).pack(side="left", fill="x", expand=True, padx=(0, 2))
+        ttk.Button(btn_row4, text="删除选中",
+                   command=self.delete_selected_result).pack(side="left", fill="x", expand=True, padx=2)
+        ttk.Button(btn_row4, text="清空全部",
+                   command=self.clear_all_results).pack(side="left", fill="x", expand=True, padx=(2, 0))
 
-        # 导出
+        # ── 导出 ──────────────────────────────────────────────────────────
         f9 = ttk.LabelFrame(p, text="💾 导出", padding=10)
         f9.pack(fill="x", pady=pad, padx=5)
+
+        # FPS & 像素比例（速度计算用）
+        param_row = ttk.Frame(f9)
+        param_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(param_row, text="FPS:").pack(side="left")
+        ttk.Entry(param_row, textvariable=self.fps_var, width=5).pack(side="left", padx=(2, 10))
+        ttk.Label(param_row, text="像素/μm:").pack(side="left")
+        ttk.Entry(param_row, textvariable=self.pixel_um_var, width=5).pack(side="left", padx=2)
+
         btn_row5 = ttk.Frame(f9)
         btn_row5.pack(fill="x")
-        ttk.Button(btn_row5, text="导出视频", command=self.export_video, style='Accent.TButton').pack(side="left", fill="x", expand=True, padx=(0, 2))
-        ttk.Button(btn_row5, text="截图", command=self.screenshot).pack(side="left", fill="x", expand=True, padx=2)
-        ttk.Button(btn_row5, text="CSV", command=self.export_data).pack(side="left", fill="x", expand=True, padx=(2, 0))
+        ttk.Button(btn_row5, text="导出视频", command=self.export_video,
+                   style='Accent.TButton').pack(side="left", fill="x", expand=True, padx=(0, 2))
+        ttk.Button(btn_row5, text="截图",
+                   command=self.screenshot).pack(side="left", fill="x", expand=True, padx=2)
+        ttk.Button(btn_row5, text="CSV路径",
+                   command=self.export_data).pack(side="left", fill="x", expand=True, padx=(2, 0))
 
-        # 状态
+        ttk.Button(f9, text="📈 导出速度CSV",
+                   command=self.export_speed_data,
+                   style='Accent.TButton').pack(fill="x", pady=(6, 0))
+
+        # ── 状态 ──────────────────────────────────────────────────────────
         f10 = ttk.LabelFrame(p, text="📌 状态", padding=10)
         f10.pack(fill="x", pady=pad, padx=5)
         self.status = tk.StringVar(value="请加载帧")
@@ -406,7 +433,7 @@ class TrackerGUI:
 
         start_time = time.time()
         if self.tracker.load_frames(self.input_dir,
-                                   lambda p: (setattr(self.progress, 'value', p * 100), self.root.update())):
+                                    lambda p: (setattr(self.progress, 'value', p * 100), self.root.update())):
             n = len(self.tracker.frames)
             load_time = time.time() - start_time
             self.frame_slider.configure(to=n - 1)
@@ -669,6 +696,74 @@ class TrackerGUI:
             self.update_result_list()
             self.update_display()
 
+    # ------------------------------------------------------------------ #
+    #  新功能：编辑重算                                                     #
+    # ------------------------------------------------------------------ #
+
+    def edit_selected_result(self):
+        """将已确认的结果切换回可编辑状态，允许补加标记后重新计算。"""
+        sel = self.result_list.curselection()
+        if not sel:
+            messagebox.showinfo("提示", "请先在列表中选择一个神经元")
+            return
+
+        text = self.result_list.get(sel[0])
+        nid = int(text.split(':')[0][1:])
+
+        # 切换到该神经元
+        self.neuron_var.set(str(nid))
+        self.on_neuron_change()
+
+        # 把已确认结果暂存为 preview，并从 confirmed 中移除
+        if nid in self.tracker.tracking_results:
+            self.preview_result = self.tracker.tracking_results.pop(nid)
+            self.preview_neuron_id = nid
+            self.update_result_list()
+
+        self.compute_info.set(f"✏️ 正在编辑 N{nid}\n添加/删除标记后点击「计算当前」重算\nEnter确认原结果 / Esc取消")
+        self.status.set(f"N{nid} 编辑模式：可继续添加标记后重算")
+        self.update_display()
+
+    # ------------------------------------------------------------------ #
+    #  新功能：导出速度                                                     #
+    # ------------------------------------------------------------------ #
+
+    def export_speed_data(self):
+        """导出所有神经元逐帧生长速度到 CSV。"""
+        if not self.tracker.tracking_results:
+            messagebox.showwarning("警告", "无追踪结果")
+            return
+
+        try:
+            fps = float(self.fps_var.get())
+            pixel_um = float(self.pixel_um_var.get())
+        except ValueError:
+            messagebox.showerror("错误", "FPS 和 像素/μm 必须是数字")
+            return
+
+        self.output_dir = self.output_entry.get()
+        os.makedirs(self.output_dir, exist_ok=True)
+        path = os.path.join(self.output_dir, "neuron_speed.csv")
+
+        all_speeds = self.tracker.compute_all_speeds(fps=fps, pixel_um=pixel_um)
+
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write("neuron_id,frame,tip_x,tip_y,dx,dy,speed_px_per_frame,speed_um_per_sec\n")
+            for nid in sorted(all_speeds.keys()):
+                for rec in all_speeds[nid]:
+                    f.write(
+                        f"{nid},{rec['frame']},{rec['tip_x']},{rec['tip_y']},"
+                        f"{rec['dx']},{rec['dy']},"
+                        f"{rec['speed_px_per_frame']},{rec['speed_um_per_sec']}\n"
+                    )
+
+        self.status.set(f"速度数据已保存: {path}")
+        messagebox.showinfo("完成", f"速度CSV导出完成！\n{path}")
+
+    # ------------------------------------------------------------------ #
+    #  原有导出方法                                                         #
+    # ------------------------------------------------------------------ #
+
     def export_video(self):
         if not self.tracker.tracking_results:
             messagebox.showwarning("警告", "无结果")
@@ -704,7 +799,7 @@ class TrackerGUI:
         os.makedirs(self.output_dir, exist_ok=True)
         path = os.path.join(self.output_dir, "neuron_paths.csv")
 
-        with open(path, 'w') as f:
+        with open(path, 'w', encoding='utf-8') as f:
             f.write("neuron_id,frame,path_index,x,y\n")
             for nid, result in sorted(self.tracker.tracking_results.items()):
                 paths_by_frame = result.get('paths_by_frame', {})
@@ -720,13 +815,13 @@ class TrackerGUI:
         vis = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
 
         cv2.line(vis, (self.tracker.left_margin, 0),
-                (self.tracker.left_margin, self.tracker.height), (0, 100, 0), 1)
+                 (self.tracker.left_margin, self.tracker.height), (0, 100, 0), 1)
         cv2.line(vis, (self.tracker.width - self.tracker.right_margin, 0),
-                (self.tracker.width - self.tracker.right_margin, self.tracker.height), (0, 100, 0), 1)
+                 (self.tracker.width - self.tracker.right_margin, self.tracker.height), (0, 100, 0), 1)
         cv2.line(vis, (0, self.tracker.edge_margin),
-                (self.tracker.width, self.tracker.edge_margin), (0, 100, 0), 1)
+                 (self.tracker.width, self.tracker.edge_margin), (0, 100, 0), 1)
         cv2.line(vis, (0, self.tracker.height - self.tracker.edge_margin),
-                (self.tracker.width, self.tracker.height - self.tracker.edge_margin), (0, 100, 0), 1)
+                 (self.tracker.width, self.tracker.height - self.tracker.edge_margin), (0, 100, 0), 1)
 
         results_to_render = []
 
@@ -761,7 +856,7 @@ class TrackerGUI:
                     cv2.circle(vis, frame_path[0], 5, (0, 255, 0), -1)
                     cv2.circle(vis, frame_path[-1], 6, (0, 165, 255), -1)
                     cv2.putText(vis, f"N{nid}", (frame_path[-1][0] + 5, frame_path[-1][1] - 5),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
 
             if not for_export:
                 for wp in waypoints:
@@ -786,7 +881,7 @@ class TrackerGUI:
                 if all_pts:
                     rightmost = max(all_pts, key=lambda x: x[0][0])
                     cv2.putText(vis, f"N{nid}", (rightmost[0][0] + 12, rightmost[0][1] - 5),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
 
         if for_export:
             cv2.putText(vis, f"Frame {idx}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)

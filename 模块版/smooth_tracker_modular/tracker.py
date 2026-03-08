@@ -940,3 +940,70 @@ class NeuronTracker:
         print(f"  最终路径: {len(max_path)}点")
 
         return result
+
+    # ------------------------------------------------------------------ #
+    #  速度计算                                                             #
+    # ------------------------------------------------------------------ #
+
+    def compute_neuron_speed(self, neuron_id, fps=10.0, pixel_um=1.0):
+        """
+        计算神经元末梢的逐帧生长速度。
+
+        参数
+        ----
+        fps       : 视频帧率（帧/秒），用于将像素/帧转换为 μm/s
+        pixel_um  : 每像素对应的微米数（默认 1.0 → 输出像素/帧）
+
+        返回
+        ----
+        list of dict，每条记录对应相邻两帧间的速度：
+            frame              : 当前帧编号
+            tip_x, tip_y       : 当前帧末梢坐标
+            dx, dy             : 末梢位移（像素）
+            speed_px_per_frame : 位移距离（像素/帧）
+            speed_um_per_sec   : 换算后速度（μm/s）
+        """
+        result = self.tracking_results.get(neuron_id)
+        if not result:
+            return []
+
+        paths_by_frame = result.get('paths_by_frame', {})
+        sorted_frames = sorted(paths_by_frame.keys())
+
+        speeds = []
+        for i in range(1, len(sorted_frames)):
+            f_prev = sorted_frames[i - 1]
+            f_curr = sorted_frames[i]
+
+            path_prev = paths_by_frame.get(f_prev, [])
+            path_curr = paths_by_frame.get(f_curr, [])
+
+            if not path_prev or not path_curr:
+                continue
+
+            tip_prev = path_prev[-1]
+            tip_curr = path_curr[-1]
+
+            dx = tip_curr[0] - tip_prev[0]
+            dy = tip_curr[1] - tip_prev[1]
+            dist_px = sqrt(dx ** 2 + dy ** 2)
+            speed_um_per_sec = dist_px * pixel_um * fps
+
+            speeds.append({
+                'frame':              f_curr,
+                'tip_x':              tip_curr[0],
+                'tip_y':              tip_curr[1],
+                'dx':                 dx,
+                'dy':                 dy,
+                'speed_px_per_frame': round(dist_px, 4),
+                'speed_um_per_sec':   round(speed_um_per_sec, 4),
+            })
+
+        return speeds
+
+    def compute_all_speeds(self, fps=10.0, pixel_um=1.0):
+        """返回所有已追踪神经元的速度数据字典 {neuron_id: [speed_records]}"""
+        return {
+            nid: self.compute_neuron_speed(nid, fps, pixel_um)
+            for nid in self.tracking_results
+        }
