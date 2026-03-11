@@ -120,4 +120,62 @@ $$
 
 ---
 
+### 更新历史
+# Changelog
+
+## v1.3.0
+
+### 新增
+- `local_recompute_with_waypoints()` — 局部重算方法，编辑模式下不再整体重算
+- 三种局部重算策略：
+  - 新点 X 在已有 waypoints 之间 → 仅清除夹住它的两锚点间路径，重追该段（含段内所有旧 waypoints + 新点）
+  - 新点 X 小于最左 waypoint → 清除路径左端，从新点向左重追至边界
+  - 新点 X 大于最右 waypoint → 清除路径右端，从最右锚点追经过新点
+
+### 修改
+- `compute_neuron_trajectory()` 返回的 result 新增 `best_frame` 字段，供编辑模式锁定参考帧
+- 局部段重追后仍走完整逐帧生长流程，保证 `paths_by_frame` 完整
+
+---
+
+## v1.2.0
+
+### 新增
+- `compute_neuron_trajectory()` 新增 `locked_frame` 参数，编辑重算时锁定原参考帧，防止轨迹漂移
+- result 字典新增 `best_frame` 字段记录实际使用的参考帧
+
+### 修复
+- 编辑模式下新加标记点后重算，`find_best_frame` 可能选中不同帧导致轨迹完全改变
+- 新加点 X 坐标最大时成为追踪起点，导致整条路径偏移
+
+---
+
+## v1.1.0
+
+### 新增
+- `compute_neuron_speed()` — 逐帧计算末梢位移速度，支持 FPS 与 μm/px 换算
+- `compute_all_speeds()` — 批量计算所有已追踪神经元速度
+- 导出 `neuron_speed.csv`，包含 `tip_x/y`、`dx/dy`、`speed_px_per_frame`、`speed_um_per_sec`
+
+### 速度公式
+
+$$
+v \ (\mu m/s) = \sqrt{\Delta x^2 + \Delta y^2} \times pixel\_um \times fps
+$$
+
+---
+
+## v1.0.0
+
+### 初始版本
+- 向量化候选点搜索（`find_candidates_leftward_vectorized` / `find_candidates_rightward_vectorized`）
+- 平滑约束：最大转角过滤 + 步距限制 + 方向加权评分
+- `trace_segment_left()` — 带必经点目标的向左追踪
+- `trace_left_unified()` — 多必经点串联追踪，追不到时自动直连
+- `grow_rightward()` — 逐帧向右生长
+- `smooth_path_preserve_waypoints()` — 路径平滑，保留必经点坐标不变
+- `connect_points_directly()` — 追踪失败时的直线兜底连接
+- `find_best_frame()` — 自动选取必经点亮度最高的帧作为参考帧
+- 多神经元支持，最多 99 条，结果存入 `tracking_results`
+- 导出 `neuron_paths.csv`
 
