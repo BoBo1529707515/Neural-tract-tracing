@@ -33,7 +33,8 @@ DEFAULT_OUTPUT_DIR = "./output"
 ---
 
 ## 使用流程
-
+目前在配置好存储路径后可以直接运行整合版_自动预处理里的run_pipeline.py文件对前几步统一处理。  
+随后使用模块版/smooth_tracker_modular中的main.py启动终端
 ```bash
 python gui.py
 ```
