@@ -134,7 +134,8 @@ $$
 
 ### 修改
 - `compute_neuron_trajectory()` 返回的 result 新增 `best_frame` 字段，供编辑模式锁定参考帧
-- 局部段重追后仍走完整逐帧生长流程，保证 `paths_by_frame` 完整
+- 局部段重追后仍走完整逐帧生长流程，保证 `paths_by_frame` 完整，以下这种情况不会再出现了。
+<img width="439" height="326" alt="image" src="https://github.com/user-attachments/assets/d0f38304-f013-44fa-bd10-f802bc02cf8f" />
 
 ---
 
