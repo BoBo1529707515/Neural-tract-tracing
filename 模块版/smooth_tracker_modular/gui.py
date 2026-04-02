@@ -31,6 +31,10 @@ class TrackerGUI:
         self.current_neuron_id = 1
         self.preview_result = None
         self.preview_neuron_id = None
+        self.preview_backup_result = None
+        self.preview_backup_neuron_id = None
+        self.preview_is_edit_mode = False
+        self.first_marker_by_neuron = {}
 
         self.input_dir = DEFAULT_INPUT_DIR
         self.output_dir = DEFAULT_OUTPUT_DIR
@@ -153,13 +157,7 @@ class TrackerGUI:
         self.ctrl_canvas.bind("<Configure>",
                               lambda e: self.ctrl_canvas.itemconfig(
                                   self.ctrl_window, width=e.width))
-        self.ctrl_canvas.bind("<Enter>",
-                              lambda e: self.ctrl_canvas.bind_all(
-                                  "<MouseWheel>",
-                                  lambda ev: self.ctrl_canvas.yview_scroll(
-                                      int(-1 * (ev.delta / 120)), "units")))
-        self.ctrl_canvas.bind("<Leave>",
-                              lambda e: self.ctrl_canvas.unbind_all("<MouseWheel>"))
+        self.ctrl_canvas.bind("<MouseWheel>", self.on_ctrl_canvas_scroll)
 
         self.setup_controls()
 
@@ -396,7 +394,7 @@ class TrackerGUI:
             self.update_neuron_color_display()
             self.update_marker_info()
             self.update_display()
-        except:
+        except ValueError:
             pass
 
     def update_marker_info(self):
@@ -467,7 +465,7 @@ class TrackerGUI:
             self.frame_var.set(str(self.current_frame_idx))
             self.frame_slider.set(self.current_frame_idx)
             self.update_display()
-        except:
+        except ValueError:
             pass
 
     def on_slider(self, v):
@@ -500,6 +498,9 @@ class TrackerGUI:
 
     def on_scroll(self, e):
         self.zoom(0.2 if e.delta > 0 else -0.2)
+
+    def on_ctrl_canvas_scroll(self, e):
+        self.ctrl_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
 
     def on_mid_press(self, e):
         self.dragging = True
@@ -566,6 +567,8 @@ class TrackerGUI:
 
         pt = (ix, iy)
         self.tracker.add_marker(self.current_neuron_id, self.current_frame_idx, ix, iy)
+        if self.current_neuron_id not in self.first_marker_by_neuron:
+            self.first_marker_by_neuron[self.current_neuron_id] = pt
 
         # 记录到撤销栈
         self.marker_undo_stack.append({
@@ -604,6 +607,17 @@ class TrackerGUI:
                 f"N{self.current_neuron_id}: 删除 {removed} @ 帧{self.current_frame_idx}  "
                 f"Ctrl+Z可撤销"
             )
+            if self.first_marker_by_neuron.get(self.current_neuron_id) == removed:
+                markers = self.tracker.get_neuron_markers(self.current_neuron_id)
+                if markers:
+                    first_frame = min(markers.keys())
+                    pts = markers.get(first_frame, [])
+                    if pts:
+                        self.first_marker_by_neuron[self.current_neuron_id] = pts[0]
+                    else:
+                        self.first_marker_by_neuron.pop(self.current_neuron_id, None)
+                else:
+                    self.first_marker_by_neuron.pop(self.current_neuron_id, None)
         else:
             self.status.set(f"N{self.current_neuron_id}: 当前帧无标记可删")
 
@@ -622,9 +636,24 @@ class TrackerGUI:
         frame_idx = record['frame_idx']
         pt        = record['point']
 
+        if nid != self.current_neuron_id:
+            self.neuron_var.set(str(nid))
+            self.on_neuron_change()
+
         if action == 'add':
             # 上次是"添加"，撤销 = 删除该精确点
             self.tracker.remove_specific_marker(nid, frame_idx, pt)
+            if self.first_marker_by_neuron.get(nid) == pt:
+                markers = self.tracker.get_neuron_markers(nid)
+                if markers:
+                    first_frame = min(markers.keys())
+                    pts = markers.get(first_frame, [])
+                    if pts:
+                        self.first_marker_by_neuron[nid] = pts[0]
+                    else:
+                        self.first_marker_by_neuron.pop(nid, None)
+                else:
+                    self.first_marker_by_neuron.pop(nid, None)
             self.status.set(
                 f"撤销：移除 N{nid} 帧{frame_idx} 的 {pt}  "
                 f"(栈剩余:{len(self.marker_undo_stack)})"
@@ -632,6 +661,8 @@ class TrackerGUI:
         else:
             # 上次是"删除"，撤销 = 重新添加
             self.tracker.add_marker(nid, frame_idx, pt[0], pt[1])
+            if nid not in self.first_marker_by_neuron:
+                self.first_marker_by_neuron[nid] = pt
             self.status.set(
                 f"撤销：恢复 N{nid} 帧{frame_idx} 的 {pt}  "
                 f"(栈剩余:{len(self.marker_undo_stack)})"
@@ -642,6 +673,7 @@ class TrackerGUI:
 
     def clear_current_markers(self):
         self.tracker.clear_neuron_markers(self.current_neuron_id)
+        self.first_marker_by_neuron.pop(self.current_neuron_id, None)
         # 清除当前神经元相关的撤销记录
         self.marker_undo_stack = [
             r for r in self.marker_undo_stack
@@ -654,7 +686,9 @@ class TrackerGUI:
     def clear_all_markers(self):
         if messagebox.askyesno("确认", "清除所有神经元的标记？"):
             self.tracker.markers.clear()
+            self.tracker.first_marker_by_neuron.clear()
             self.marker_undo_stack.clear()
+            self.first_marker_by_neuron.clear()
             self.update_marker_info()
             self.status.set("已清除所有标记")
             self.update_display()
@@ -670,7 +704,7 @@ class TrackerGUI:
                 f"参数已更新: 转角≤{self.tracker.max_turn_angle}°, "
                 f"步距≤{self.tracker.max_step_distance}"
             )
-        except:
+        except ValueError:
             pass
 
     def compute_current_neuron(self):
@@ -684,10 +718,12 @@ class TrackerGUI:
         self.status.set(f"计算 N{self.current_neuron_id} 轨迹（完整重算）...")
         self.root.update()
 
-        # 若当前处于编辑模式，先清除旧 preview 避免渲染干扰
-        if self.preview_neuron_id == self.current_neuron_id:
+        if self.preview_neuron_id != self.current_neuron_id:
             self.preview_result = None
             self.preview_neuron_id = None
+            self.preview_backup_result = None
+            self.preview_backup_neuron_id = None
+            self.preview_is_edit_mode = False
 
         start_time = time.time()
         result = self.tracker.compute_neuron_trajectory(self.current_neuron_id)
@@ -729,6 +765,7 @@ class TrackerGUI:
             result = self.tracker.compute_neuron_trajectory(nid)
             total_time += time.time() - start
             if result:
+                self.tracker.tracking_results[nid] = result
                 success += 1
 
         self.update_result_list()
@@ -744,15 +781,22 @@ class TrackerGUI:
             self.status.set(f"已确认 N{self.preview_neuron_id}")
             self.preview_result = None
             self.preview_neuron_id = None
+            self.preview_backup_result = None
+            self.preview_backup_neuron_id = None
+            self.preview_is_edit_mode = False
             self.compute_info.set("")
             self.update_display()
 
     def cancel_preview(self):
-        if self.preview_neuron_id:
-            if self.preview_neuron_id in self.tracker.tracking_results:
-                del self.tracker.tracking_results[self.preview_neuron_id]
+        if self.preview_is_edit_mode and self.preview_neuron_id is not None:
+            if self.preview_backup_result is not None and self.preview_backup_neuron_id == self.preview_neuron_id:
+                self.tracker.tracking_results[self.preview_neuron_id] = self.preview_backup_result
+                self.update_result_list()
         self.preview_result = None
         self.preview_neuron_id = None
+        self.preview_backup_result = None
+        self.preview_backup_neuron_id = None
+        self.preview_is_edit_mode = False
         self.compute_info.set("已取消")
         self.update_display()
 
@@ -814,6 +858,9 @@ class TrackerGUI:
         if nid in self.tracker.tracking_results:
             self.preview_result = self.tracker.tracking_results.pop(nid)
             self.preview_neuron_id = nid
+            self.preview_backup_result = self.preview_result
+            self.preview_backup_neuron_id = nid
+            self.preview_is_edit_mode = True
             self.update_result_list()
 
         # 清空该神经元相关的旧撤销记录，以免混淆
@@ -848,11 +895,13 @@ class TrackerGUI:
 
         self.output_dir = self.output_entry.get()
         os.makedirs(self.output_dir, exist_ok=True)
-        path = os.path.join(self.output_dir, "neuron_speed.csv")
+        speed_path = os.path.join(self.output_dir, "neuron_speed.csv")
+        tip_path = os.path.join(self.output_dir, "neuron_tip.csv")
 
         all_speeds = self.tracker.compute_all_speeds(fps=fps, pixel_um=pixel_um)
+        all_tips = self.tracker.compute_all_tip_positions()
 
-        with open(path, 'w', encoding='utf-8') as f:
+        with open(speed_path, 'w', encoding='utf-8') as f:
             f.write("neuron_id,frame,tip_x,tip_y,dx,dy,"
                     "speed_px_per_frame,speed_um_per_sec\n")
             for nid in sorted(all_speeds.keys()):
@@ -863,6 +912,14 @@ class TrackerGUI:
                         f"{rec['speed_px_per_frame']},{rec['speed_um_per_sec']}\n"
                     )
 
+        with open(tip_path, 'w', encoding='utf-8') as f:
+            f.write("neuron_id,frame,tip_x,tip_y,path_points\n")
+            for nid in sorted(all_tips.keys()):
+                for rec in all_tips[nid]:
+                    f.write(
+                        f"{nid},{rec['frame']},{rec['tip_x']},{rec['tip_y']},{rec['path_points']}\n"
+                    )
+
         # 状态栏显示各神经元平均速度摘要
         summary = []
         for nid, records in sorted(all_speeds.items()):
@@ -870,8 +927,11 @@ class TrackerGUI:
                 avg = sum(r['speed_um_per_sec'] for r in records) / len(records)
                 summary.append(f"N{nid}均速{avg:.2f}μm/s")
 
-        self.status.set("速度已保存: " + path + "  |  " + "  ".join(summary))
-        messagebox.showinfo("完成", f"速度CSV导出完成！\n{path}\n\n" + "\n".join(summary))
+        self.status.set("速度已保存: " + speed_path + "  |  " + "  ".join(summary))
+        messagebox.showinfo(
+            "完成",
+            f"速度CSV导出完成！\n{speed_path}\n\n末端点CSV：\n{tip_path}\n\n" + "\n".join(summary)
+        )
 
     # ------------------------------------------------------------------ #
     #  原有导出方法                                                         #
@@ -881,11 +941,16 @@ class TrackerGUI:
         if not self.tracker.tracking_results:
             messagebox.showwarning("警告", "无结果")
             return
+        try:
+            fps = float(self.fps_var.get())
+        except ValueError:
+            messagebox.showerror("错误", "FPS 必须是数字")
+            return
         self.output_dir = self.output_entry.get()
         os.makedirs(self.output_dir, exist_ok=True)
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         path = os.path.join(self.output_dir, "neuron_tracking_smooth.mp4")
-        out = cv2.VideoWriter(path, fourcc, 10,
+        out = cv2.VideoWriter(path, fourcc, fps,
                               (self.tracker.width, self.tracker.height), True)
         for i in range(len(self.tracker.frames)):
             out.write(self.render(i, True))
@@ -906,6 +971,8 @@ class TrackerGUI:
         self.status.set(f"已保存: {path}")
 
     def _get_first_anchor_point(self, neuron_id, result):
+        if neuron_id in self.first_marker_by_neuron:
+            return self.first_marker_by_neuron[neuron_id]
         markers = self.tracker.get_neuron_markers(neuron_id)
         if markers:
             first_frame = min(markers.keys())
@@ -968,6 +1035,8 @@ class TrackerGUI:
 
         results_to_render = []
         for nid, result in self.tracker.tracking_results.items():
+            if self.preview_neuron_id == nid:
+                continue
             results_to_render.append((nid, result, False))
         if self.preview_result and self.preview_neuron_id:
             results_to_render.append((self.preview_neuron_id, self.preview_result, True))
@@ -986,22 +1055,47 @@ class TrackerGUI:
                 init_len = len(initial_path)
                 anchor = self._get_first_anchor_point(nid, result)
                 oriented_path = self._orient_path_from_anchor(frame_path, anchor)
-
-                for j in range(1, min(len(frame_path), init_len)):
-                    cv2.line(vis, frame_path[j - 1], frame_path[j], color, 2)
-
-                if len(frame_path) > init_len:
-                    lighter_color = tuple(min(255, c + 60) for c in color)
-                    for j in range(init_len, len(frame_path)):
-                        cv2.line(vis, frame_path[j - 1], frame_path[j], lighter_color, 2)
-
                 if oriented_path:
-                    cv2.circle(vis, oriented_path[0], 5, (0, 255, 0), -1)
+                    start_pt = anchor if anchor is not None else oriented_path[0]
                     tip_pt = frame_path[-1] if frame_path else oriented_path[-1]
-                    cv2.circle(vis, tip_pt, 6, (0, 165, 255), -1)
-                    cv2.putText(vis, f"N{nid}",
-                                (tip_pt[0] + 5, tip_pt[1] - 5),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+                else:
+                    start_pt = None
+                    tip_pt = None
+
+                if for_export:
+                    if start_pt is not None and tip_pt is not None:
+                        # 确保完全不画首点与末端的直线连接，只画真实走过的连续轨迹
+                        if len(oriented_path) >= 2:
+                            cv2.polylines(vis, [np.array(oriented_path, np.int32)], False, color, 2)
+                        
+                        # 画起点
+                        first_marker = self._get_first_anchor_point(nid, result)
+                        if first_marker:
+                            cv2.circle(vis, first_marker, 6, (0, 255, 0), -1)
+                        else:
+                            cv2.circle(vis, start_pt, 6, (0, 255, 0), -1)
+                            
+                        # 画当前末端点（也就是橙色点，严格跟着轨迹尽头）
+                        cv2.circle(vis, tip_pt, 8, (0, 165, 255), -1)
+                        cv2.putText(vis, f"N{nid}",
+                                    (tip_pt[0] + 5, tip_pt[1] - 5),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+                else:
+                    for j in range(1, min(len(frame_path), init_len)):
+                        cv2.line(vis, frame_path[j - 1], frame_path[j], color, 2)
+
+                    if len(frame_path) > init_len:
+                        lighter_color = tuple(min(255, c + 60) for c in color)
+                        start_j = max(init_len, 1)
+                        for j in range(start_j, len(frame_path)):
+                            cv2.line(vis, frame_path[j - 1], frame_path[j], lighter_color, 2)
+
+                    if start_pt is not None and tip_pt is not None:
+                        cv2.circle(vis, start_pt, 5, (0, 255, 0), -1)
+                        cv2.circle(vis, tip_pt, 6, (0, 165, 255), -1)
+                        cv2.putText(vis, f"N{nid}",
+                                    (tip_pt[0] + 5, tip_pt[1] - 5),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
 
             if not for_export:
                 for wp in waypoints:

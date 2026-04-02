@@ -32,6 +32,7 @@ class NeuronTracker:
 
         self.markers = defaultdict(lambda: defaultdict(list))
         self.tracking_results = {}
+        self.first_marker_by_neuron = {}
 
         self._search_grids = {}
 
@@ -88,16 +89,22 @@ class NeuronTracker:
         return self._search_grids[key]
 
     def add_marker(self, neuron_id, frame_idx, x, y):
-        self.markers[neuron_id][frame_idx].append((int(x), int(y)))
+        pt = (int(x), int(y))
+        self.markers[neuron_id][frame_idx].append(pt)
+        if neuron_id not in self.first_marker_by_neuron:
+            self.first_marker_by_neuron[neuron_id] = pt
 
     def remove_last_marker(self, neuron_id, frame_idx):
         if neuron_id in self.markers and frame_idx in self.markers[neuron_id]:
             if self.markers[neuron_id][frame_idx]:
                 pt = self.markers[neuron_id][frame_idx].pop()
+                if self.first_marker_by_neuron.get(neuron_id) == pt:
+                    self._refresh_first_marker(neuron_id)
                 if not self.markers[neuron_id][frame_idx]:
                     del self.markers[neuron_id][frame_idx]
                 if not self.markers[neuron_id]:
                     del self.markers[neuron_id]
+                    self.first_marker_by_neuron.pop(neuron_id, None)
                 return pt
         return None
 
@@ -105,16 +112,63 @@ class NeuronTracker:
         if neuron_id in self.markers and frame_idx in self.markers[neuron_id]:
             try:
                 self.markers[neuron_id][frame_idx].remove(point)
+                if self.first_marker_by_neuron.get(neuron_id) == point:
+                    self._refresh_first_marker(neuron_id)
                 if not self.markers[neuron_id][frame_idx]:
                     del self.markers[neuron_id][frame_idx]
                 if not self.markers[neuron_id]:
                     del self.markers[neuron_id]
+                    self.first_marker_by_neuron.pop(neuron_id, None)
             except ValueError:
                 pass
 
     def clear_neuron_markers(self, neuron_id):
         if neuron_id in self.markers:
             del self.markers[neuron_id]
+        self.first_marker_by_neuron.pop(neuron_id, None)
+
+    def _refresh_first_marker(self, neuron_id):
+        markers = self.markers.get(neuron_id)
+        if not markers:
+            self.first_marker_by_neuron.pop(neuron_id, None)
+            return
+        first_frame = min(markers.keys())
+        pts = markers.get(first_frame, [])
+        if pts:
+            self.first_marker_by_neuron[neuron_id] = pts[0]
+        else:
+            self.first_marker_by_neuron.pop(neuron_id, None)
+
+    def _get_first_marker_point(self, neuron_id):
+        if neuron_id in self.first_marker_by_neuron:
+            return self.first_marker_by_neuron[neuron_id]
+        markers = self.get_neuron_markers(neuron_id)
+        if markers:
+            first_frame = min(markers.keys())
+            pts = markers.get(first_frame, [])
+            if pts:
+                self.first_marker_by_neuron[neuron_id] = pts[0]
+                return pts[0]
+        return None
+
+    def _enforce_start_at_first_marker(self, neuron_id, path):
+        if not path:
+            return path
+        first_marker = self._get_first_marker_point(neuron_id)
+        if first_marker is None:
+            return path
+        nearest_idx = 0
+        nearest_dist = float('inf')
+        for i, p in enumerate(path):
+            d = (p[0] - first_marker[0]) ** 2 + (p[1] - first_marker[1]) ** 2
+            if d < nearest_dist:
+                nearest_dist = d
+                nearest_idx = i
+        trimmed = path[nearest_idx:]
+        if not trimmed:
+            return [first_marker]
+        trimmed[0] = first_marker
+        return trimmed
 
     def get_neuron_markers(self, neuron_id):
         return dict(self.markers.get(neuron_id, {}))
@@ -307,12 +361,14 @@ class NeuronTracker:
         return linearity
 
     def find_candidates_leftward_vectorized(self, frame_idx, cx, cy, path, direction, visited,
-                                            target=None, radius=None):
+                                            target=None, radius=None, max_dist=None):
         if radius is None:
             radius = self.search_radius
+        if max_dist is None:
+            max_dist = self.max_step_distance
 
         frame = self.frames_np[frame_idx]
-        grid = self._get_search_grid(radius, 'left', self.max_step_distance)
+        grid = self._get_search_grid(radius, 'left', max_dist)
 
         dx = grid['dx']
         dy = grid['dy']
@@ -446,30 +502,19 @@ class NeuronTracker:
         dx_bright = nx_bright - cx
         dy_bright = ny_bright - cy
 
-        speed_mask = dist_bright <= self.max_step_distance
-        if not np.any(speed_mask):
-            return []
-
-        nx_speed = nx_bright[speed_mask]
-        ny_speed = ny_bright[speed_mask]
-        brightness_speed = brightness_bright[speed_mask]
-        dx_speed = dx_bright[speed_mask]
-        dy_speed = dy_bright[speed_mask]
-        dist_speed = dist_bright[speed_mask]
-
         not_visited = np.array([
-            (int(nx_speed[i]), int(ny_speed[i])) not in visited
-            for i in range(len(nx_speed))
+            (int(nx_bright[i]), int(ny_bright[i])) not in visited
+            for i in range(len(nx_bright))
         ])
         if not np.any(not_visited):
             return []
 
-        nx_filter = nx_speed[not_visited]
-        ny_filter = ny_speed[not_visited]
-        brightness_filter = brightness_speed[not_visited]
-        dx_filter = dx_speed[not_visited]
-        dy_filter = dy_speed[not_visited]
-        dist_filter = dist_speed[not_visited]
+        nx_filter = nx_bright[not_visited]
+        ny_filter = ny_bright[not_visited]
+        brightness_filter = brightness_bright[not_visited]
+        dx_filter = dx_bright[not_visited]
+        dy_filter = dy_bright[not_visited]
+        dist_filter = dist_bright[not_visited]
 
         coords = list(zip(nx_filter, ny_filter))
         is_smooth = self.check_smooth_transition_vectorized(path, coords)
@@ -552,7 +597,7 @@ class NeuronTracker:
                                     self.search_radius_step):
                     candidates = self.find_candidates_leftward_vectorized(
                         frame_idx, cx, cy, path, direction, visited,
-                        target=target, radius=radius
+                        target=target, radius=radius, max_dist=radius
                     )
                     if candidates:
                         break
@@ -796,7 +841,10 @@ class NeuronTracker:
                     if dist < min_dist:
                         min_dist = dist
                         insert_idx = idx
-                full_path.insert(insert_idx, wp)
+                if full_path and wp[0] >= full_path[insert_idx][0]:
+                    full_path.insert(insert_idx + 1, wp)
+                else:
+                    full_path.insert(insert_idx, wp)
 
         return full_path, boundary_reached
 
@@ -892,6 +940,7 @@ class NeuronTracker:
 
         if len(initial_path) >= 2 and initial_path[0][0] > initial_path[-1][0]:
             initial_path = initial_path[::-1]
+        initial_path = self._enforce_start_at_first_marker(neuron_id, initial_path)
 
         print(f"  初始路径: {len(initial_path)}点, 左端到达{left_boundary or '边界'}")
 
@@ -906,31 +955,75 @@ class NeuronTracker:
         t3 = time.time()
         paths_by_frame = {}
 
-        for frame_idx in range(first_marked_frame):
-            paths_by_frame[frame_idx] = initial_path.copy()
-
-        current_path = initial_path.copy()
-
-        print(f"\n[向右生长] 从帧{first_marked_frame}开始")
-
+        # 初始向导路径为 initial_path
+        current_guide_path = initial_path.copy()
         growth_count = 0
-        for frame_idx in range(first_marked_frame, len(self.frames)):
-            new_points, right_boundary, new_direction = self.grow_rightward(
-                frame_idx, current_path, current_direction
+
+        # 当前末端点（第一帧开始前的初始状态，即起始点本身，或者第一帧的某个初始位置）
+        # 我们希望“累积追加，永不回退”，所以末端点只能往右走，或者停留在原地。
+        current_tip_idx = 0 
+
+        print(f"\n[沿着轨迹寻找端点 (累积追加)] 从帧0开始逐帧计算末端")
+
+        for frame_idx in range(len(self.frames)):
+            frame_np = self.frames_np[frame_idx] if self.frames_np is not None else self.frames[frame_idx]
+            
+            # 1. 从上一帧的末端点 (current_tip_idx) 开始，沿着 guide_path 往前试探
+            # 只前进，永不回退 (current_tip_idx 只增不减)
+            dark_count = 0
+            search_idx = current_tip_idx
+            
+            while search_idx < len(current_guide_path):
+                x, y = current_guide_path[search_idx]
+                if 0 <= x < self.width and 0 <= y < self.height:
+                    if frame_np[y, x] >= self.brightness_threshold:
+                        # 发现亮信号，确实可以长到这里
+                        current_tip_idx = search_idx + 1
+                        dark_count = 0
+                    else:
+                        dark_count += 1
+                        if dark_count > self.max_step_distance:
+                            # 连续暗区过长，停止当前帧的前进
+                            break
+                else:
+                    break
+                search_idx += 1
+            
+            if current_tip_idx == 0:
+                current_frame_path = [current_guide_path[0]]
+            else:
+                # 强制要求 current_frame_path 的起点是 guide_path 的起点
+                current_frame_path = current_guide_path[:current_tip_idx]
+                current_frame_path[0] = current_guide_path[0]
+
+            # 2. 如果当前帧的信号一直延伸到了 guide_path 的尽头，则尝试向右继续生长 (突破向导)
+            if current_tip_idx == len(current_guide_path):
+                if len(current_guide_path) >= 2:
+                    dx = current_guide_path[-1][0] - current_guide_path[-2][0]
+                    dy = current_guide_path[-1][1] - current_guide_path[-2][1]
+                    dist = sqrt(dx ** 2 + dy ** 2)
+                    current_direction = (dx / dist, dy / dist) if dist > 0 else (1, 0)
+                else:
+                    current_direction = (1, 0)
+
+                new_points, right_boundary, new_direction = self.grow_rightward(
+                    frame_idx, current_guide_path, current_direction
+                )
+
+                if new_points:
+                    growth_count += len(new_points)
+                    current_guide_path.extend(new_points)
+                    # 突破生长的部分直接作为新一帧的末端
+                    current_tip_idx += len(new_points)
+                    current_frame_path.extend(new_points)
+
+            # 强制起点严格对齐
+            paths_by_frame[frame_idx] = self._enforce_start_at_first_marker(
+                neuron_id, current_frame_path
             )
 
-            if new_points:
-                current_path = current_path + new_points
-                current_direction = new_direction
-                growth_count += len(new_points)
-
-            paths_by_frame[frame_idx] = current_path.copy()
-
-            if right_boundary:
-                print(f"  帧{frame_idx}: 到达右边界 {right_boundary}")
-
         t4 = time.time()
-        print(f"  向右生长耗时: {t4 - t3:.3f}秒, 共生长{growth_count}点")
+        print(f"  逐帧末端寻找与生长耗时: {t4 - t3:.3f}秒, 共额外生长{growth_count}点")
 
         max_path = paths_by_frame[len(self.frames) - 1]
 
@@ -1006,7 +1099,7 @@ class NeuronTracker:
             dy0 = base_path[look_fwd][1] - start_pt[1]
             d0  = sqrt(dx0 ** 2 + dy0 ** 2)
             cur_dir   = (dx0 / d0, dy0 / d0) if d0 > 0 else (1, 0)
-            trace_dir = (-cur_dir[0], -cur_dir[1])
+            trace_dir = cur_dir
 
             for tgt in list(targets) + [end_pt]:
                 sub, _, reached, trace_dir = self.trace_segment_left(
@@ -1189,6 +1282,11 @@ class NeuronTracker:
                       f"新initial_path长={len(base_path)}，grow_rightward未重跑")
 
         # ── 汇总结果 ──────────────────────────────────────────────────────
+        base_path = self._enforce_start_at_first_marker(neuron_id, base_path)
+        paths_by_frame = {
+            f: self._enforce_start_at_first_marker(neuron_id, list(p))
+            for f, p in paths_by_frame.items()
+        }
         max_path      = paths_by_frame.get(len(self.frames) - 1, base_path)
         all_waypoints = self.get_all_waypoints(neuron_id)
 
@@ -1253,5 +1351,33 @@ class NeuronTracker:
     def compute_all_speeds(self, fps=10.0, pixel_um=1.0):
         return {
             nid: self.compute_neuron_speed(nid, fps, pixel_um)
+            for nid in self.tracking_results
+        }
+
+    def compute_neuron_tip_positions(self, neuron_id):
+        result = self.tracking_results.get(neuron_id)
+        if not result:
+            return []
+
+        paths_by_frame = result.get('paths_by_frame', {})
+        sorted_frames = sorted(paths_by_frame.keys())
+
+        tips = []
+        for frame_idx in sorted_frames:
+            path = paths_by_frame.get(frame_idx, [])
+            if not path:
+                continue
+            tip_x, tip_y = path[-1]
+            tips.append({
+                'frame': frame_idx,
+                'tip_x': tip_x,
+                'tip_y': tip_y,
+                'path_points': len(path),
+            })
+        return tips
+
+    def compute_all_tip_positions(self):
+        return {
+            nid: self.compute_neuron_tip_positions(nid)
             for nid in self.tracking_results
         }
