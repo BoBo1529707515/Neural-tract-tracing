@@ -78,8 +78,13 @@ python gui.py
 
 ---
 ## 跟踪效果  
+原始图像  
+<img width="1233" height="680" alt="image" src="https://github.com/user-attachments/assets/a7154811-3592-4905-b70a-7796ca220ccc" />
+
+
 注：黄线为跟踪到的轨迹
 <img width="1108" height="639" alt="42377f858e065a8c14745d88630b164" src="https://github.com/user-attachments/assets/717d47ce-34cc-487f-b7ed-0bae25bc9b11" />
+多目标跟踪：
 <img width="1894" height="1046" alt="image" src="https://github.com/user-attachments/assets/1301f7e6-d933-4771-a3cb-95c1a9be0f92" />
 
 ## 算法
