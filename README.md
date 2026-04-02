@@ -74,7 +74,8 @@ python gui.py
 | 像素/μm | 1.0 | 物理尺寸标定值 |
 
 ---
-## 跟踪效果
+## 跟踪效果  
+注：黄线为跟踪到的轨迹
 <img width="1108" height="639" alt="42377f858e065a8c14745d88630b164" src="https://github.com/user-attachments/assets/717d47ce-34cc-487f-b7ed-0bae25bc9b11" />
 
 ## 算法
