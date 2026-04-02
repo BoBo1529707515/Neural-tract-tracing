@@ -77,6 +77,7 @@ python gui.py
 ## 跟踪效果  
 注：黄线为跟踪到的轨迹
 <img width="1108" height="639" alt="42377f858e065a8c14745d88630b164" src="https://github.com/user-attachments/assets/717d47ce-34cc-487f-b7ed-0bae25bc9b11" />
+<img width="1894" height="1046" alt="image" src="https://github.com/user-attachments/assets/1301f7e6-d933-4771-a3cb-95c1a9be0f92" />
 
 ## 算法
 
@@ -123,6 +124,33 @@ $$
 
 ### 更新历史
 # Changelog
+## v1.4.0
+### 新增
+逐帧端点搜索回归（新版结构内）
+在保留 reference_path + tips 框架下，重新引入旧版 grow_rightward() 的逐帧搜索能力
+新增 tip_track：记录每一帧端点坐标，用于分析与可视化
+导出视频增强
+导出视频时叠加绘制 端点随时间移动轨迹线（tip track）
+硬约束：标记点必经
+轨迹构建时对用户标记点实现“硬必经”机制：任意情况下路径都必须经过用户标记点（坐标级）
+后向纠错（利用后一帧修正前一帧）
+增加后向检查：当某帧 tip 明显跳错分支、下一帧又回到正确路线时，自动用后一帧的信息回拉前一帧的 tip（在亮度条件满足时）
+一键清除（当前神经元）
+新增按钮：一键清除当前神经元的标记、已确认结果以及预览状态
+### 修改
+逐帧生长同步策略重构（关键稳定性修复）
+彻底移除“desired_path[:len(current_path)] == current_path 前缀相等”假设
+改为维护 current_ref_end（reference/base 前缀索引） + current_tail（grow 产生尾巴） 的结构
+当 required_tip/tips 推进时自动丢弃旧 tail，确保加点后重新计算一定生效、不会被旧“野点”锁死
+起点标记策略更新
+first_marker_by_neuron 改为“最靠左标记点优先”，避免后续补点被起点裁剪逻辑截断
+局部重算鲁棒性增强
+local_recompute_with_waypoints() 的 old_wp 不再混入 new_waypoints，避免分支判断出错导致段重建失败
+### 修复
+修复在分叉/弱信号场景下：
+“某帧走错、下一帧回正，但前一帧不修正”的现象（引入后向纠错）
+“加点后重算轨迹不变/不生效”的根因（前缀同步永久失效）
+<img width="690" height="658" alt="image" src="https://github.com/user-attachments/assets/e9e54db3-13e2-465b-9999-71f25dcdbe25" />
 
 ## v1.3.0
 
