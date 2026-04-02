@@ -39,6 +39,11 @@ class TrackerGUI:
         self.input_dir = DEFAULT_INPUT_DIR
         self.output_dir = DEFAULT_OUTPUT_DIR
 
+        # 自动重算：当某个神经元已经计算过后，继续加点/删点会自动触发重算预览
+        self.auto_recompute_enabled = True
+        self.auto_recompute_delay_ms = 250  # 防抖：多次快速点击只重算一次
+        self._auto_recompute_job = None
+
         # 速度导出参数
         self.fps_var = tk.StringVar(value="10")
         self.pixel_um_var = tk.StringVar(value="1.0")
@@ -250,6 +255,13 @@ class TrackerGUI:
                    command=self.clear_current_markers).pack(side="left", fill="x", expand=True, padx=2)
         ttk.Button(btn_row, text="清除全部",
                    command=self.clear_all_markers).pack(side="left", fill="x", expand=True, padx=(2, 0))
+
+        # 一键清除：当前神经元的标记 + 结果（更符合高频工作流）
+        ttk.Button(
+            f5,
+            text="🧹 一键清除（当前神经元）",
+            command=self.clear_current_everything
+        ).pack(fill="x", pady=(0, 5))
 
         # ── 计算轨迹 ──────────────────────────────────────────────────────
         f6 = ttk.LabelFrame(p, text="🔬 计算轨迹", padding=10)
@@ -567,15 +579,20 @@ class TrackerGUI:
 
         pt = (ix, iy)
         self.tracker.add_marker(self.current_neuron_id, self.current_frame_idx, ix, iy)
+        # GUI 侧也维护一个“最靠左的起点标记”，用于渲染/导出的一致性
         if self.current_neuron_id not in self.first_marker_by_neuron:
             self.first_marker_by_neuron[self.current_neuron_id] = pt
+        else:
+            cur = self.first_marker_by_neuron[self.current_neuron_id]
+            if pt[0] < cur[0]:
+                self.first_marker_by_neuron[self.current_neuron_id] = pt
 
         # 记录到撤销栈
         self.marker_undo_stack.append({
-            'action':    'add',
+            'action': 'add',
             'neuron_id': self.current_neuron_id,
             'frame_idx': self.current_frame_idx,
-            'point':     pt,
+            'point': pt,
         })
 
         self.update_marker_info()
@@ -585,6 +602,7 @@ class TrackerGUI:
             f"[共{total}点]  Ctrl+Z可撤销"
         )
         self.update_display()
+        self.request_auto_recompute()
 
     def on_right_click(self, e):
         """右键：删除当前帧最后一个标记，记录到撤销栈。"""
@@ -598,10 +616,10 @@ class TrackerGUI:
         if removed is not None:
             # 记录到撤销栈（action='remove' 表示删除，撤销时要重新 add）
             self.marker_undo_stack.append({
-                'action':    'remove',
+                'action': 'remove',
                 'neuron_id': self.current_neuron_id,
                 'frame_idx': self.current_frame_idx,
-                'point':     removed,
+                'point': removed,
             })
             self.status.set(
                 f"N{self.current_neuron_id}: 删除 {removed} @ 帧{self.current_frame_idx}  "
@@ -623,6 +641,8 @@ class TrackerGUI:
 
         self.update_marker_info()
         self.update_display()
+        if removed is not None:
+            self.request_auto_recompute()
 
     def undo_last_marker(self):
         """撤销最近一次标记添加或删除操作（Ctrl+Z / 撤销按钮）。"""
@@ -631,10 +651,10 @@ class TrackerGUI:
             return
 
         record = self.marker_undo_stack.pop()
-        action    = record['action']
-        nid       = record['neuron_id']
+        action = record['action']
+        nid = record['neuron_id']
         frame_idx = record['frame_idx']
-        pt        = record['point']
+        pt = record['point']
 
         if nid != self.current_neuron_id:
             self.neuron_var.set(str(nid))
@@ -670,6 +690,42 @@ class TrackerGUI:
 
         self.update_marker_info()
         self.update_display()
+        self.request_auto_recompute()
+
+    def request_auto_recompute(self):
+        """
+        如果当前神经元已经有计算结果（已确认或正在预览），则在加点/删点后自动触发一次重算预览。
+        使用 after 做防抖，避免连续点击每次都立即重算。
+        """
+        if not self.auto_recompute_enabled:
+            return
+        if not self.tracker.frames:
+            return
+
+        nid = self.current_neuron_id
+        has_any_result = (nid in self.tracker.tracking_results) or (self.preview_neuron_id == nid)
+        if not has_any_result:
+            return
+
+        # 取消上一次排队任务（防抖）
+        if self._auto_recompute_job is not None:
+            try:
+                self.root.after_cancel(self._auto_recompute_job)
+            except Exception:
+                pass
+            self._auto_recompute_job = None
+
+        self._auto_recompute_job = self.root.after(self.auto_recompute_delay_ms, self._auto_recompute_now)
+
+    def _auto_recompute_now(self):
+        """执行自动重算（生成 preview，不自动确认）。"""
+        self._auto_recompute_job = None
+        nid = self.current_neuron_id
+        markers = self.tracker.get_neuron_markers(nid)
+        if not markers:
+            return
+        # 直接复用现有“计算当前”逻辑：它会生成 preview，并在画面上显示
+        self.compute_current_neuron()
 
     def clear_current_markers(self):
         self.tracker.clear_neuron_markers(self.current_neuron_id)
@@ -681,6 +737,35 @@ class TrackerGUI:
         ]
         self.update_marker_info()
         self.status.set(f"已清除 N{self.current_neuron_id} 的所有标记")
+        self.update_display()
+
+    def clear_current_everything(self):
+        """一键清除当前神经元：标记 + 已确认结果 + 预览状态。"""
+        nid = self.current_neuron_id
+        if not messagebox.askyesno("确认", f"清除 N{nid} 的标记与追踪结果？"):
+            return
+
+        # 清标记
+        self.tracker.clear_neuron_markers(nid)
+        self.first_marker_by_neuron.pop(nid, None)
+        self.marker_undo_stack = [r for r in self.marker_undo_stack if r['neuron_id'] != nid]
+
+        # 删已确认结果
+        if nid in self.tracker.tracking_results:
+            del self.tracker.tracking_results[nid]
+
+        # 清预览（如果正在预览/编辑该神经元）
+        if self.preview_neuron_id == nid:
+            self.preview_result = None
+            self.preview_neuron_id = None
+            self.preview_backup_result = None
+            self.preview_backup_neuron_id = None
+            self.preview_is_edit_mode = False
+            self.compute_info.set("")
+
+        self.update_marker_info()
+        self.update_result_list()
+        self.status.set(f"已清除 N{nid} 的标记与结果")
         self.update_display()
 
     def clear_all_markers(self):
@@ -1064,34 +1149,51 @@ class TrackerGUI:
 
                 if for_export:
                     if start_pt is not None and tip_pt is not None:
-                        # 确保完全不画首点与末端的直线连接，只画真实走过的连续轨迹
+                        # 对于导出视频：
+                        # oriented_path 已经是通过追踪器拿到的“当前帧从起点到端点的完整轨迹”
+                        # 确保完全不画首尾直连线，只画真实走过的连续轨迹
                         if len(oriented_path) >= 2:
                             cv2.polylines(vis, [np.array(oriented_path, np.int32)], False, color, 2)
-                        
-                        # 画起点
+
+                        # 画端点随时间移动轨迹（tip track，画到当前帧为止）
+                        tip_track = result.get('tip_track')
+                        if tip_track:
+                            pts = [p for p in tip_track[:idx + 1] if p is not None]
+                            if len(pts) >= 2:
+                                track_color = tuple(min(255, c + 60) for c in color)
+                                cv2.polylines(vis, [np.array(pts, np.int32)], False, track_color, 1)
+
+                        # 画起点 (强制取用 _get_first_anchor_point 保证起点位置在导出时绝对统一)
                         first_marker = self._get_first_anchor_point(nid, result)
                         if first_marker:
                             cv2.circle(vis, first_marker, 6, (0, 255, 0), -1)
                         else:
                             cv2.circle(vis, start_pt, 6, (0, 255, 0), -1)
-                            
+
                         # 画当前末端点（也就是橙色点，严格跟着轨迹尽头）
                         cv2.circle(vis, tip_pt, 8, (0, 165, 255), -1)
                         cv2.putText(vis, f"N{nid}",
                                     (tip_pt[0] + 5, tip_pt[1] - 5),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
                 else:
-                    for j in range(1, min(len(frame_path), init_len)):
-                        cv2.line(vis, frame_path[j - 1], frame_path[j], color, 2)
+                    # 确保完全不画首尾直连线，用 polylines 绘制真实连贯轨迹
+                    if len(oriented_path) >= 2:
+                        cv2.polylines(vis, [np.array(oriented_path, np.int32)], False, color, 2)
 
-                    if len(frame_path) > init_len:
+                    if len(oriented_path) > init_len:
                         lighter_color = tuple(min(255, c + 60) for c in color)
                         start_j = max(init_len, 1)
-                        for j in range(start_j, len(frame_path)):
-                            cv2.line(vis, frame_path[j - 1], frame_path[j], lighter_color, 2)
+                        if len(oriented_path[start_j - 1:]) >= 2:
+                            cv2.polylines(vis, [np.array(oriented_path[start_j - 1:], np.int32)], False, lighter_color,
+                                          2)
 
                     if start_pt is not None and tip_pt is not None:
-                        cv2.circle(vis, start_pt, 5, (0, 255, 0), -1)
+                        first_marker = self._get_first_anchor_point(nid, result)
+                        if first_marker:
+                            cv2.circle(vis, first_marker, 6, (0, 255, 0), -1)
+                        else:
+                            cv2.circle(vis, start_pt, 6, (0, 255, 0), -1)
+
                         cv2.circle(vis, tip_pt, 6, (0, 165, 255), -1)
                         cv2.putText(vis, f"N{nid}",
                                     (tip_pt[0] + 5, tip_pt[1] - 5),
