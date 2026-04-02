@@ -905,6 +905,33 @@ class TrackerGUI:
         cv2.imwrite(path, self.render(self.current_frame_idx, True))
         self.status.set(f"已保存: {path}")
 
+    def _get_first_anchor_point(self, neuron_id, result):
+        markers = self.tracker.get_neuron_markers(neuron_id)
+        if markers:
+            first_frame = min(markers.keys())
+            pts = markers.get(first_frame, [])
+            if pts:
+                return pts[0]
+        waypoints = result.get('waypoints', [])
+        if waypoints:
+            return waypoints[0]
+        return None
+
+    def _orient_path_from_anchor(self, frame_path, anchor):
+        if not frame_path:
+            return []
+        oriented = list(frame_path)
+        if len(oriented) == 1 or anchor is None:
+            return oriented
+        ax, ay = anchor
+        x0, y0 = oriented[0]
+        x1, y1 = oriented[-1]
+        d0 = (x0 - ax) ** 2 + (y0 - ay) ** 2
+        d1 = (x1 - ax) ** 2 + (y1 - ay) ** 2
+        if d1 < d0:
+            oriented.reverse()
+        return oriented
+
     def export_data(self):
         if not self.tracker.tracking_results:
             messagebox.showwarning("警告", "无结果")
@@ -916,9 +943,11 @@ class TrackerGUI:
         with open(path, 'w', encoding='utf-8') as f:
             f.write("neuron_id,frame,path_index,x,y\n")
             for nid, result in sorted(self.tracker.tracking_results.items()):
+                anchor = self._get_first_anchor_point(nid, result)
                 paths_by_frame = result.get('paths_by_frame', {})
                 for frame_idx, frame_path in sorted(paths_by_frame.items()):
-                    for idx, (x, y) in enumerate(frame_path):
+                    oriented_path = self._orient_path_from_anchor(frame_path, anchor)
+                    for idx, (x, y) in enumerate(oriented_path):
                         f.write(f"{nid},{frame_idx},{idx},{x},{y}\n")
 
         self.status.set(f"数据已保存: {path}")
@@ -955,6 +984,8 @@ class TrackerGUI:
             if idx in paths_by_frame:
                 frame_path = paths_by_frame[idx]
                 init_len = len(initial_path)
+                anchor = self._get_first_anchor_point(nid, result)
+                oriented_path = self._orient_path_from_anchor(frame_path, anchor)
 
                 for j in range(1, min(len(frame_path), init_len)):
                     cv2.line(vis, frame_path[j - 1], frame_path[j], color, 2)
@@ -964,11 +995,12 @@ class TrackerGUI:
                     for j in range(init_len, len(frame_path)):
                         cv2.line(vis, frame_path[j - 1], frame_path[j], lighter_color, 2)
 
-                if frame_path:
-                    cv2.circle(vis, frame_path[0], 5, (0, 255, 0), -1)
-                    cv2.circle(vis, frame_path[-1], 6, (0, 165, 255), -1)
+                if oriented_path:
+                    cv2.circle(vis, oriented_path[0], 5, (0, 255, 0), -1)
+                    tip_pt = frame_path[-1] if frame_path else oriented_path[-1]
+                    cv2.circle(vis, tip_pt, 6, (0, 165, 255), -1)
                     cv2.putText(vis, f"N{nid}",
-                                (frame_path[-1][0] + 5, frame_path[-1][1] - 5),
+                                (tip_pt[0] + 5, tip_pt[1] - 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
 
             if not for_export:
