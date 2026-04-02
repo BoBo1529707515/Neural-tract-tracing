@@ -1079,6 +1079,121 @@ class NeuronTracker:
                 required[f] = required[f - 1]
         return required
 
+    def _local_max_brightness(self, frame_idx, x, y, radius=3):
+        """取 (x,y) 邻域内最大亮度（用于判断该帧是否支持把 tip 拉到某个位置）。"""
+        if self.frames_np is None:
+            return 0
+        x = int(x)
+        y = int(y)
+        y1 = max(0, y - radius)
+        y2 = min(self.height, y + radius + 1)
+        x1 = max(0, x - radius)
+        x2 = min(self.width, x + radius + 1)
+        patch = self.frames_np[frame_idx, y1:y2, x1:x2]
+        if patch.size == 0:
+            return 0
+        return int(patch.max())
+
+    def _build_paths_with_growth(self, neuron_id, reference_path, tips, required_tip, max_steps=600):
+        """
+        从 reference_path 构建每帧路径：
+        - reference 前缀长度由 max(tips, required_tip) 控制（硬约束）
+        - grow_rightward 产生 tail，仅用于该次前向生长；当 reference 前缀变长时会丢弃 tail
+        """
+        n_frames = len(self.frames)
+        paths_by_frame = {}
+        tip_track = []
+
+        current_ref_end = max(1, min(max(int(tips[0]), int(required_tip[0])), len(reference_path)))
+        current_tail = []
+        base_prefix = list(reference_path[:current_ref_end])
+        current_path = base_prefix
+        current_dir = self._estimate_direction_from_path(current_path, fallback=(1.0, 0.0))
+
+        paths_by_frame[0] = list(current_path)
+        tip_track.append(current_path[-1] if current_path else None)
+
+        for f in range(1, n_frames):
+            desired_end = max(1, min(max(int(tips[f]), int(required_tip[f])), len(reference_path)))
+            if desired_end > current_ref_end:
+                current_ref_end = desired_end
+                current_tail = []  # 新硬约束出现：丢弃旧 tail，避免锁死
+
+            base_prefix = list(reference_path[:current_ref_end])
+            current_path = base_prefix + current_tail
+            if current_tail and base_prefix and current_path[len(base_prefix) - 1] == current_tail[0]:
+                current_path = base_prefix + current_tail[1:]
+
+            current_dir = self._estimate_direction_from_path(current_path, fallback=current_dir)
+            new_points, _, new_dir = self.grow_rightward(
+                frame_idx=f,
+                prev_path=current_path,
+                prev_direction=current_dir,
+                max_steps=max_steps,
+            )
+            if new_points:
+                current_tail = current_tail + new_points
+                current_path = base_prefix + current_tail
+                if new_dir is not None:
+                    current_dir = new_dir
+
+            paths_by_frame[f] = list(current_path)
+            tip_track.append(current_path[-1] if current_path else None)
+
+        return paths_by_frame, tip_track
+
+    def _backward_correct_required_tip(self, reference_path, tips, required_tip, tip_track,
+                                       jump_px=25, idx_jump=40, brightness_ratio=0.9):
+        """
+        后向纠错（用户选择的方案）：
+        - 如果某帧 tip 明显“跳错分支”（与下一帧 tip 差异大），但下一帧又回到正确路，
+          则尝试用下一帧的 tip 在 reference_path 上的位置来抬高当前帧 required_tip，
+          从而让当前帧的黄色预览也落到正确分支上。
+        - 只有当该帧在该位置附近确实“够亮”时才抬高，避免强行拉到不存在信号的位置。
+        """
+        n_frames = len(self.frames)
+        if n_frames < 2 or not reference_path:
+            return required_tip
+
+        ref_len = len(reference_path)
+        proj_idx = np.zeros(n_frames, dtype=np.int32)
+        for f in range(n_frames):
+            pt = tip_track[f] if f < len(tip_track) else None
+            if pt is None:
+                proj_idx[f] = int(tips[f])
+            else:
+                proj_idx[f] = min(ref_len - 1, max(0, self._nearest_idx(reference_path, pt)))
+
+        req = np.array(required_tip, dtype=np.int32).copy()
+        for f in range(n_frames - 2, -1, -1):
+            p0 = tip_track[f]
+            p1 = tip_track[f + 1]
+            if p0 is None or p1 is None:
+                continue
+
+            dx = float(p0[0] - p1[0])
+            dy = float(p0[1] - p1[1])
+            dist = sqrt(dx * dx + dy * dy)
+            idx_diff = abs(int(proj_idx[f + 1]) - int(proj_idx[f]))
+
+            if dist < jump_px and idx_diff < idx_jump:
+                continue
+
+            candidate_end = min(ref_len, int(proj_idx[f + 1]) + 1)
+            if candidate_end <= int(req[f]):
+                continue
+
+            cx, cy = reference_path[candidate_end - 1]
+            b = self._local_max_brightness(f, cx, cy, radius=self.tip_corridor_radius)
+            if b >= int(self.brightness_threshold * brightness_ratio):
+                req[f] = candidate_end
+
+        # 确保单调：后续帧也必须满足前面帧的约束
+        for f in range(1, n_frames):
+            if req[f] < req[f - 1]:
+                req[f] = req[f - 1]
+        return req
+
     # ================================================================== #
     # ★★★  核心：全帧端点检测（严格从上一帧端点继续）  ★★★                     #
     # ================================================================== #
@@ -1294,60 +1409,19 @@ class NeuronTracker:
         # 依据“标记帧”生成每帧最小 tip 要求，确保黄色预览必经所有已标记点
         required_tip = self._compute_required_tip_by_frame(neuron_id, reference_path)
 
-        # ── 步骤4：逐帧端点搜索（恢复旧版 grow_rightward 思路） ──
-        # 思路：
-        #   1) tips 提供“参考路径上”粗略端点（可能偏保守）
-        #   2) 在每一帧上，从当前端点出发用 grow_rightward 做局部搜索，把端点“追出来”
-        #   3) 为了满足“端点随时间推进”的需求，这里沿时间维护 current_path（只追加，不回退）
+        # ── 步骤4：先前向生长，再做“后向纠错”，最后重建一次 paths_by_frame ──
+        paths_by_frame, tip_track = self._build_paths_with_growth(
+            neuron_id, reference_path, tips, required_tip, max_steps=600
+        )
+        required_tip = self._backward_correct_required_tip(
+            reference_path, tips, required_tip, tip_track,
+            jump_px=25, idx_jump=40, brightness_ratio=0.9
+        )
+        paths_by_frame, tip_track = self._build_paths_with_growth(
+            neuron_id, reference_path, tips, required_tip, max_steps=600
+        )
+
         n_frames = len(self.frames)
-        paths_by_frame = {}
-        tip_track = []
-
-        # 关键修复（针对“加点后轨迹不变”）：
-        # - 不能用“前缀完全相等”去判断是否同步 reference_path，因为 grow_rightward 会追加“野点”，
-        #   导致该判断长期失败，新 waypoint 永远不会同步到 current_path。
-        # - 改为维护一个“当前已走到 reference_path 的索引 current_ref_end”，只按索引截取 reference_path。
-        # - 当 required_tip/tips 使 current_ref_end 增大时，说明出现新的硬约束/推进需求：
-        #   必须丢弃之前 grow 出来的 tail（它可能在错误分支上），从新的 reference 前缀重新长。
-
-        current_ref_end = max(1, min(max(int(tips[0]), int(required_tip[0])), len(reference_path)))
-        current_tail = []  # reference_path 之外的“生长点”
-        base_prefix = list(reference_path[:current_ref_end])
-        current_path = base_prefix
-        current_dir = self._estimate_direction_from_path(current_path, fallback=(1.0, 0.0))
-        paths_by_frame[0] = list(current_path)
-        tip_track.append(current_path[-1] if current_path else None)
-
-        for f in range(1, n_frames):
-            desired_end = max(1, min(max(int(tips[f]), int(required_tip[f])), len(reference_path)))
-            if desired_end > current_ref_end:
-                current_ref_end = desired_end
-                current_tail = []  # 新硬约束出现：丢弃旧 tail，避免“加点后轨迹不变”
-
-            base_prefix = list(reference_path[:current_ref_end])
-            current_path = base_prefix + current_tail
-            if current_tail and base_prefix and current_path[len(base_prefix) - 1] == current_tail[0]:
-                # 避免连接点重复
-                current_path = base_prefix + current_tail[1:]
-
-            current_dir = self._estimate_direction_from_path(current_path, fallback=current_dir)
-
-            new_points, _, new_dir = self.grow_rightward(
-                frame_idx=f,
-                prev_path=current_path,
-                prev_direction=current_dir,
-                max_steps=600,
-            )
-            if new_points:
-                # tail 只追加，不影响 current_ref_end（reference 前缀长度由 tips/required_tip 决定）
-                current_tail = current_tail + new_points
-                current_path = base_prefix + current_tail
-                if new_dir is not None:
-                    current_dir = new_dir
-
-            paths_by_frame[f] = list(current_path)
-            tip_track.append(current_path[-1] if current_path else None)
-
         max_path = paths_by_frame[n_frames - 1]
 
         result = {
@@ -1543,45 +1617,17 @@ class NeuronTracker:
         # 用户标记点硬约束（局部重算也必须保持必经）
         required_tip = self._compute_required_tip_by_frame(neuron_id, base_path)
 
-        # ── 用逐帧 grow_rightward 把端点追出来（与 compute_neuron_trajectory 保持一致） ──
-        n_frames = len(self.frames)
-        paths_by_frame = {}
-        tip_track = []
-
-        current_ref_end = max(1, min(max(int(tips[0]), int(required_tip[0])), len(base_path)))
-        current_tail = []
-        base_prefix = list(base_path[:current_ref_end])
-        current_path = base_prefix
-        current_dir = self._estimate_direction_from_path(current_path, fallback=(1.0, 0.0))
-        paths_by_frame[0] = list(current_path)
-        tip_track.append(current_path[-1] if current_path else None)
-
-        for f in range(1, n_frames):
-            desired_end = max(1, min(max(int(tips[f]), int(required_tip[f])), len(base_path)))
-            if desired_end > current_ref_end:
-                current_ref_end = desired_end
-                current_tail = []
-
-            base_prefix = list(base_path[:current_ref_end])
-            current_path = base_prefix + current_tail
-            if current_tail and base_prefix and current_path[len(base_prefix) - 1] == current_tail[0]:
-                current_path = base_prefix + current_tail[1:]
-
-            current_dir = self._estimate_direction_from_path(current_path, fallback=current_dir)
-            new_points, _, new_dir = self.grow_rightward(
-                frame_idx=f,
-                prev_path=current_path,
-                prev_direction=current_dir,
-                max_steps=600,
-            )
-            if new_points:
-                current_tail = current_tail + new_points
-                current_path = base_prefix + current_tail
-                if new_dir is not None:
-                    current_dir = new_dir
-
-            paths_by_frame[f] = list(current_path)
-            tip_track.append(current_path[-1] if current_path else None)
+        # ── 前向生长 → 后向纠错 → 重建（与 compute_neuron_trajectory 对齐） ──
+        paths_by_frame, tip_track = self._build_paths_with_growth(
+            neuron_id, base_path, tips, required_tip, max_steps=600
+        )
+        required_tip = self._backward_correct_required_tip(
+            base_path, tips, required_tip, tip_track,
+            jump_px=25, idx_jump=40, brightness_ratio=0.9
+        )
+        paths_by_frame, tip_track = self._build_paths_with_growth(
+            neuron_id, base_path, tips, required_tip, max_steps=600
+        )
 
         max_path = paths_by_frame.get(n_frames - 1, base_path)
 
