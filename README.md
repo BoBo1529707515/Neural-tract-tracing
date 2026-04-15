@@ -31,6 +31,7 @@ DEFAULT_OUTPUT_DIR = "./output"
 ```
 
 ---
+<img width="1408" height="768" alt="figure" src="https://github.com/user-attachments/assets/e9b1164b-3d54-469a-86a0-25512c81ba38" />
 
 ## 使用流程
 目前在配置好存储路径后可以直接运行整合版_自动预处理里的run_pipeline.py文件对前几步统一处理。  
